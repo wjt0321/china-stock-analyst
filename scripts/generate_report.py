@@ -1,9 +1,27 @@
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from team_router import should_use_agent_team, build_skill_chain_plan
+from stock_utils import (
+    get_shortline_indicator_recommendations,
+    get_realtime_source_pool,
+    infer_source_category,
+    extract_timestamp_text,
+    normalize_timestamp_text,
+)
 
 
-def parse_search_results_to_report(search_results: list, stock_code: str) -> dict:
+SENTIMENT_MAX_IMPACT = 2.0
+EMOTIONAL_NEWS_KEYWORDS = ["暴涨", "暴跌", "惊天", "炸裂", "血赚", "必涨", "必赢", "内幕", "速看"]
+LOW_CREDIBILITY_HINTS = ["转载", "自媒体", "论坛", "股吧", "传闻", "小作文", "未证实"]
+POSITIVE_SENTIMENT_KEYWORDS = ["利好", "增持", "中标", "回购", "增长", "上调", "突破", "创新高"]
+NEGATIVE_SENTIMENT_KEYWORDS = ["利空", "减持", "处罚", "亏损", "下调", "暴雷", "跌停", "终止"]
+INDUSTRY_POSITIVE_KEYWORDS = ["景气", "扩产", "提价", "复苏", "高增长", "需求回暖", "高景气"]
+INDUSTRY_NEGATIVE_KEYWORDS = ["过剩", "下行", "去库存", "收缩", "需求疲弱", "价格战"]
+EVENT_POSITIVE_KEYWORDS = ["中标", "回购", "增持", "政策支持", "订单", "突破"]
+EVENT_NEGATIVE_KEYWORDS = ["处罚", "问询", "减持", "终止", "风险提示", "监管关注"]
+
+
+def parse_search_results_to_report(search_results: list, stock_code: str, request_date: str = "") -> dict:
     """
     将搜索结果解析为结构化报告数据
 
@@ -19,60 +37,98 @@ def parse_search_results_to_report(search_results: list, stock_code: str) -> dic
         "price_info": {},
         "fund_flow": {},
         "financial": {},
-        "news": []
+        "shortline_signals": {},
+        "news": [],
+        "field_sources": {},
+        "audit_gate": {
+            "passed": True,
+            "require_resample": False,
+            "failed_fields": [],
+            "downgrade_reasons": [],
+            "next_action": "continue",
+        },
+        "expert_outputs": {},
+        "supervisor_review": {},
     }
 
     for result in search_results:
         title = result.get('title', '')
         snippet = result.get('snippet', '')
         link = result.get('link', '')
+        source = _build_source_meta(result)
 
         # 解析价格信息
         if '最新价' in snippet or '股价' in title:
-            _parse_price(snippet, report['price_info'])
+            parsed = _parse_price(snippet)
+            report['price_info'].update(parsed)
+            _record_field_sources(report, "price", parsed, source)
 
         # 解析资金流向
         if '资金流向' in title or '主力' in snippet:
-            _parse_fund_flow(snippet, report['fund_flow'])
+            parsed = _parse_fund_flow(snippet)
+            report['fund_flow'].update(parsed)
+            _record_field_sources(report, "fund_flow", parsed, source)
 
         if (
             '净利润' in snippet or '业绩' in title or '预增' in snippet
             or '营业收入' in snippet or '同比' in snippet or '环比' in snippet
         ):
-            _parse_financial(snippet, report['financial'])
+            parsed = _parse_financial(snippet)
+            report['financial'].update(parsed)
+            _record_field_sources(report, "financial", parsed, source)
+        if _contains_shortline_indicator(snippet, title):
+            _parse_shortline_signals(snippet, report)
 
         # 保存新闻
         report['news'].append({
             'title': title,
             'snippet': snippet[:150],
-            'link': link
+            'link': link,
+            'timestamp': source.get("timestamp", "N/A"),
+            'source_category': source.get("source_category", "其他来源"),
         })
+    report["audit_gate"] = _run_data_authenticity_audit(report, request_date=request_date)
+    _apply_audit_downgrade(report)
+    report["sentiment_governance"] = _govern_news_sentiment(report.get("news", []))
+    industry_output = _build_industry_research_output(report)
+    event_output = _build_event_hunter_output(report)
+    report["expert_outputs"]["industry_researcher"] = industry_output
+    report["expert_outputs"]["event_hunter"] = event_output
+    report["supervisor_review"] = _run_supervisor_review(report, industry_output, event_output)
+    report["evidences"] = _merge_all_evidences(report)
 
     return report
 
 
-def _parse_price(snippet: str, price_info: dict):
-
+def _parse_price(snippet: str) -> dict:
+    parsed = {}
     # 匹配价格
     price_pattern = r'(\d+\.?\d*)\s*元'
     price_match = re.search(price_pattern, snippet)
     if price_match:
-        price_info['price'] = price_match.group(1)
+        parsed['price'] = price_match.group(1)
 
     # 匹配涨跌幅
     change_pattern = r'([+-]?\d+\.?\d*)\s*%'
     change_match = re.search(change_pattern, snippet)
     if change_match:
-        price_info['change'] = change_match.group(1)
+        parsed['change'] = change_match.group(1)
+    turnover_match = re.search(r'成交额[^0-9]*([0-9]+\.?[0-9]*)\s*(亿元|亿|万元|万|元)', snippet)
+    if turnover_match:
+        turnover = _normalize_to_wan(float(turnover_match.group(1)), turnover_match.group(2))
+        parsed['turnover'] = f"{turnover:.2f}"
+    return parsed
 
 
-def _parse_fund_flow(snippet: str, fund_flow: dict):
+def _parse_fund_flow(snippet: str) -> dict:
+    parsed = {}
     main = _extract_flow_amount(snippet, '主力')
     if main is not None:
-        fund_flow['main'] = f"{main:.2f}"
+        parsed['main'] = f"{main:.2f}"
     retail = _extract_flow_amount(snippet, '散户')
     if retail is not None:
-        fund_flow['retail'] = f"{retail:.2f}"
+        parsed['retail'] = f"{retail:.2f}"
+    return parsed
 
 
 def _extract_flow_amount(snippet: str, role: str):
@@ -99,19 +155,486 @@ def _normalize_to_wan(value: float, unit: str) -> float:
     return value
 
 
-def _parse_financial(snippet: str, financial: dict):
-    financial['news'] = snippet[:200]
+def _parse_financial(snippet: str) -> dict:
+    parsed = {'news': snippet[:200]}
     revenue_match = re.search(r'营业收入[^0-9]*([0-9]+\.?[0-9]*)\s*(亿元|亿|万元|万|元)', snippet)
     if revenue_match:
-        financial['revenue'] = f"{float(revenue_match.group(1)):.2f}"
-        financial['revenue_unit'] = revenue_match.group(2)
+        parsed['revenue'] = f"{float(revenue_match.group(1)):.2f}"
+        parsed['revenue_unit'] = revenue_match.group(2)
     yoy_match = re.search(r'同比(?:增长|下降)?\s*([+-]?[0-9]+\.?[0-9]*)\s*%', snippet)
     if yoy_match:
-        financial['yoy'] = f"{float(yoy_match.group(1)):.2f}"
+        parsed['yoy'] = f"{float(yoy_match.group(1)):.2f}"
     qoq_match = re.search(r'环比(?:增长|下降)?\s*([+-]?[0-9]+\.?[0-9]*)\s*%', snippet)
     if qoq_match:
-        financial['qoq'] = f"{float(qoq_match.group(1)):.2f}"
-    financial['as_of'] = datetime.now().strftime('%Y-%m-%d')
+        parsed['qoq'] = f"{float(qoq_match.group(1)):.2f}"
+    parsed['as_of'] = datetime.now().strftime('%Y-%m-%d')
+    return parsed
+
+
+def _contains_shortline_indicator(snippet: str, title: str) -> bool:
+    text = f"{title} {snippet}"
+    keywords = ["VWAP", "量比", "ATR", "止损", "偏离"]
+    return any(keyword in text for keyword in keywords)
+
+
+def _parse_shortline_signals(snippet: str, report: dict):
+    signals = report.setdefault("shortline_signals", {})
+    vwap_match = re.search(r'VWAP[^0-9\-+]*([+-]?[0-9]+\.?[0-9]*)\s*%', snippet, re.IGNORECASE)
+    if vwap_match:
+        signals["vwap_deviation"] = f"{float(vwap_match.group(1)):.2f}"
+    volume_ratio_match = re.search(r'量比[^0-9]*([0-9]+\.?[0-9]*)', snippet)
+    if volume_ratio_match:
+        signals["volume_ratio"] = f"{float(volume_ratio_match.group(1)):.2f}"
+    atr_stop_match = re.search(r'(?:建议)?止损[^0-9]*([0-9]+\.?[0-9]*)\s*元', snippet)
+    if atr_stop_match:
+        signals["atr_stop"] = f"{float(atr_stop_match.group(1)):.2f}"
+    atr_value_match = re.search(r'ATR(?:14)?[^0-9]*([0-9]+\.?[0-9]*)', snippet, re.IGNORECASE)
+    if atr_value_match:
+        signals["atr_value"] = f"{float(atr_value_match.group(1)):.2f}"
+    price_val = _safe_float(report.get("price_info", {}).get("price"))
+    atr_val = _safe_float(signals.get("atr_value"))
+    if signals.get("atr_stop") in (None, "", "N/A") and price_val > 0 and atr_val > 0:
+        signals["atr_stop"] = f"{max(price_val - 1.5 * atr_val, 0):.2f}"
+
+
+def _build_source_meta(result: dict) -> dict:
+    title = result.get("title", "")
+    snippet = result.get("snippet", "")
+    link = result.get("link", "")
+    raw_timestamp = (
+        result.get("timestamp")
+        or result.get("published_at")
+        or extract_timestamp_text(f"{title} {snippet}", "")
+    )
+    normalized_timestamp = normalize_timestamp_text(raw_timestamp)
+    if not normalized_timestamp:
+        normalized_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    return {
+        "source_url": link or "N/A",
+        "source_title": title or "N/A",
+        "source_category": infer_source_category(link, title),
+        "timestamp": normalized_timestamp,
+    }
+
+
+def _record_field_sources(report: dict, section: str, updates: dict, source: dict):
+    if not updates:
+        return
+    field_sources = report.setdefault("field_sources", {})
+    for key, value in updates.items():
+        if str(value).strip() in ("", "N/A", "未知"):
+            continue
+        field = f"{section}.{key}"
+        records = field_sources.setdefault(field, [])
+        records.append(
+            {
+                "value": str(value),
+                "source_url": source.get("source_url", "N/A"),
+                "source_title": source.get("source_title", "N/A"),
+                "source_category": source.get("source_category", "其他来源"),
+                "timestamp": source.get("timestamp", "N/A"),
+            }
+        )
+
+
+def _run_data_authenticity_audit(report: dict, request_date: str = "") -> dict:
+    source_pool = get_realtime_source_pool()
+    required_categories = source_pool.get("required_categories", 3)
+    threshold_minutes = source_pool.get("timestamp_conflict_threshold_minutes", 90)
+    request_dt = _parse_day(request_date) or datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    field_sources = report.get("field_sources", {})
+    failed_fields = []
+    downgrade_reasons = []
+    field_results = {}
+
+    for field in source_pool.get("core_fields", []):
+        matched_records = _pick_field_records(field_sources, field)
+        categories = {item.get("source_category", "其他来源") for item in matched_records}
+        timestamps = [_parse_timestamp(item.get("timestamp", "")) for item in matched_records]
+        timestamps = [ts for ts in timestamps if ts]
+        date_rollback = any(ts < request_dt for ts in timestamps)
+        timestamp_conflict = _has_timestamp_conflict(timestamps, threshold_minutes)
+        category_insufficient = len(categories) < required_categories
+        trusted = bool(matched_records) and not date_rollback and not timestamp_conflict and not category_insufficient
+        consistency = "一致" if trusted else "不一致"
+        reasons = []
+        if not matched_records:
+            reasons.append("缺失来源记录")
+        if date_rollback:
+            reasons.append("日期回退")
+        if timestamp_conflict:
+            reasons.append("多源时间戳冲突")
+        if category_insufficient:
+            reasons.append(f"来源类别不足({len(categories)}/{required_categories})")
+        if reasons:
+            failed_fields.append(field)
+            downgrade_reasons.append(f"{field}: {'、'.join(reasons)}")
+        field_results[field] = {
+            "trusted": trusted,
+            "consistency": consistency,
+            "source_count": len(matched_records),
+            "category_count": len(categories),
+            "records": matched_records,
+            "reason": "；".join(reasons) if reasons else "通过",
+        }
+    passed = len(failed_fields) == 0
+    return {
+        "passed": passed,
+        "require_resample": not passed,
+        "failed_fields": failed_fields,
+        "downgrade_reasons": downgrade_reasons,
+        "next_action": "resample" if not passed else "continue",
+        "field_results": field_results,
+    }
+
+
+def _apply_audit_downgrade(report: dict):
+    gate = report.get("audit_gate", {})
+    if gate.get("passed", True):
+        return
+    report.setdefault("shortline_signals", {})["audit_downgraded"] = "true"
+    report["shortline_signals"]["audit_next_action"] = gate.get("next_action", "resample")
+
+
+def _pick_field_records(field_sources: dict, simple_field: str) -> list:
+    suffix = f".{simple_field}"
+    picked = []
+    for field_name, records in field_sources.items():
+        if field_name.endswith(suffix):
+            picked.extend(records)
+    return picked
+
+
+def _has_timestamp_conflict(timestamps: list, threshold_minutes: int) -> bool:
+    if len(timestamps) <= 1:
+        return False
+    min_ts = min(timestamps)
+    max_ts = max(timestamps)
+    return (max_ts - min_ts) > timedelta(minutes=threshold_minutes)
+
+
+def _parse_day(day_text: str):
+    text = (day_text or "").strip()
+    if not text:
+        return None
+    normalized = normalize_timestamp_text(text)
+    return _parse_timestamp(normalized)
+
+
+def _parse_timestamp(timestamp_text: str):
+    text = (timestamp_text or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _govern_news_sentiment(news_items: list) -> dict:
+    dedup_seen = set()
+    accepted = []
+    rejected = []
+    deduped_count = 0
+    for item in news_items:
+        title = (item.get("title", "") or "").strip()
+        snippet = (item.get("snippet", "") or "").strip()
+        fingerprint = _build_news_fingerprint(title, snippet)
+        if fingerprint in dedup_seen:
+            deduped_count += 1
+            rejected.append(
+                {
+                    "title": title or "N/A",
+                    "reason": "重复内容（标题/摘要高度相似）",
+                    "quality_score": 0,
+                }
+            )
+            continue
+        dedup_seen.add(fingerprint)
+        quality = _score_news_quality(item)
+        if quality["accepted"]:
+            accepted.append(
+                {
+                    "title": title or "N/A",
+                    "quality_score": quality["score"],
+                    "sentiment": _classify_news_sentiment(f"{title} {snippet}"),
+                    "reasons": quality["reasons"],
+                }
+            )
+        else:
+            rejected.append(
+                {
+                    "title": title or "N/A",
+                    "reason": "；".join(quality["reject_reasons"]) or "质量不达标",
+                    "quality_score": quality["score"],
+                }
+            )
+    accepted_count = len(accepted)
+    rejected_count = len(rejected)
+    total_unique = accepted_count + rejected_count
+    avg_quality = (
+        sum(item["quality_score"] for item in accepted) / accepted_count if accepted_count else 0.0
+    )
+    weighted_sentiment_sum = 0.0
+    weight_sum = 0.0
+    for item in accepted:
+        sentiment_val = item["sentiment"]
+        quality_weight = item["quality_score"] / 100
+        weighted_sentiment_sum += sentiment_val * quality_weight
+        weight_sum += quality_weight
+    sentiment_score_raw = (weighted_sentiment_sum / weight_sum) if weight_sum else 0.0
+    score_adjustment = sentiment_score_raw * (avg_quality / 100) * SENTIMENT_MAX_IMPACT
+    if score_adjustment > SENTIMENT_MAX_IMPACT:
+        score_adjustment = SENTIMENT_MAX_IMPACT
+    if score_adjustment < -SENTIMENT_MAX_IMPACT:
+        score_adjustment = -SENTIMENT_MAX_IMPACT
+    return {
+        "max_impact_cap": f"{SENTIMENT_MAX_IMPACT:.1f}",
+        "deduped_count": deduped_count,
+        "accepted_count": accepted_count,
+        "rejected_count": rejected_count,
+        "acceptance_ratio": f"{(accepted_count / total_unique * 100):.1f}%" if total_unique else "0.0%",
+        "average_quality_score": f"{avg_quality:.1f}",
+        "sentiment_score_raw": f"{sentiment_score_raw:.2f}",
+        "score_adjustment": f"{score_adjustment:.1f}",
+        "accepted_items": accepted,
+        "rejected_items": rejected,
+    }
+
+
+def _build_news_fingerprint(title: str, snippet: str) -> str:
+    merged = f"{title} {snippet}"
+    normalized = re.sub(r"\s+", "", merged.lower())
+    normalized = re.sub(r"[^\w\u4e00-\u9fff]", "", normalized)
+    return normalized[:80]
+
+
+def _score_news_quality(news_item: dict) -> dict:
+    title = (news_item.get("title", "") or "").strip()
+    snippet = (news_item.get("snippet", "") or "").strip()
+    link = (news_item.get("link", "") or "").strip().lower()
+    source_category = (news_item.get("source_category", "") or "").strip()
+    text = f"{title} {snippet}"
+    score = 0
+    reasons = []
+    reject_reasons = []
+    if link and link != "n/a":
+        score += 25
+        reasons.append("包含可追溯链接")
+    else:
+        reject_reasons.append("缺少来源链接")
+    if source_category and source_category != "其他来源":
+        score += 20
+        reasons.append(f"来源类别可信（{source_category}）")
+    else:
+        score += 5
+        reject_reasons.append("来源类别不明确")
+    if re.search(r"(20\d{2}[-/年]\d{1,2}[-/月]\d{1,2}|\d+\.?\d*%|\d+\.?\d*亿|\d+\.?\d*万)", text):
+        score += 25
+        reasons.append("包含可验证事实数据")
+    else:
+        reject_reasons.append("缺少可验证事实数据")
+    if not any(word in text for word in EMOTIONAL_NEWS_KEYWORDS):
+        score += 15
+        reasons.append("标题情绪噪声较低")
+    else:
+        reject_reasons.append("存在情绪化标题词")
+    if not any(hint in text for hint in LOW_CREDIBILITY_HINTS):
+        score += 15
+        reasons.append("未命中低可信传播特征")
+    else:
+        reject_reasons.append("命中转载/传闻类低可信特征")
+    accepted = score >= 60 and len(reject_reasons) <= 2
+    return {"score": min(score, 100), "accepted": accepted, "reasons": reasons, "reject_reasons": reject_reasons}
+
+
+def _classify_news_sentiment(text: str) -> int:
+    positive_hits = sum(1 for word in POSITIVE_SENTIMENT_KEYWORDS if word in text)
+    negative_hits = sum(1 for word in NEGATIVE_SENTIMENT_KEYWORDS if word in text)
+    if positive_hits > negative_hits:
+        return 1
+    if negative_hits > positive_hits:
+        return -1
+    return 0
+
+
+def _build_industry_research_output(report: dict) -> dict:
+    news_items = report.get("news", [])
+    positive_hits = 0
+    negative_hits = 0
+    evidences = []
+    for item in news_items:
+        text = f"{item.get('title', '')} {item.get('snippet', '')}"
+        pos = sum(1 for kw in INDUSTRY_POSITIVE_KEYWORDS if kw in text)
+        neg = sum(1 for kw in INDUSTRY_NEGATIVE_KEYWORDS if kw in text)
+        positive_hits += pos
+        negative_hits += neg
+        if pos > 0 or neg > 0:
+            evidences.append(
+                {
+                    "conclusion": "行业景气证据",
+                    "value": item.get("title", "N/A"),
+                    "source_url": item.get("link", "N/A"),
+                    "timestamp": item.get("timestamp", "N/A"),
+                }
+            )
+    score = 50 + positive_hits * 8 - negative_hits * 8
+    score = max(0, min(score, 100))
+    if score >= 65:
+        outlook = "景气上行"
+        decision_hint = "可做"
+    elif score <= 40:
+        outlook = "景气承压"
+        decision_hint = "回避"
+    else:
+        outlook = "景气中性"
+        decision_hint = "观察"
+    inflection = "上行拐点待确认"
+    if positive_hits - negative_hits >= 2:
+        inflection = "上行拐点初现"
+    elif negative_hits - positive_hits >= 2:
+        inflection = "下行拐点风险增加"
+    return {
+        "agent": "expert_industry_researcher",
+        "as_of": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "score": score,
+        "outlook": outlook,
+        "inflection": inflection,
+        "competition_landscape": "头部集中度与议价能力仍需持续跟踪",
+        "drivers": ["景气词命中统计", "供需节奏", "竞争格局变化"],
+        "risk_hint": "若行业新闻转向负面且持续两日以上，需下调仓位",
+        "decision_hint": decision_hint,
+        "evidences": evidences[:5],
+    }
+
+
+def _build_event_hunter_output(report: dict) -> dict:
+    news_items = report.get("news", [])
+    positive_hits = 0
+    negative_hits = 0
+    regulation_hits = 0
+    evidences = []
+    for item in news_items:
+        text = f"{item.get('title', '')} {item.get('snippet', '')}"
+        pos = sum(1 for kw in EVENT_POSITIVE_KEYWORDS if kw in text)
+        neg = sum(1 for kw in EVENT_NEGATIVE_KEYWORDS if kw in text)
+        positive_hits += pos
+        negative_hits += neg
+        if any(kw in text for kw in ["监管", "问询", "处罚", "异动公告"]):
+            regulation_hits += 1
+        if pos > 0 or neg > 0:
+            impact = "正向" if pos >= neg else "负向"
+            evidences.append(
+                {
+                    "conclusion": f"事件冲击{impact}",
+                    "value": item.get("title", "N/A"),
+                    "source_url": item.get("link", "N/A"),
+                    "timestamp": item.get("timestamp", "N/A"),
+                }
+            )
+    score = 50 + positive_hits * 10 - negative_hits * 12
+    score = max(0, min(score, 100))
+    if score >= 65:
+        impact_direction = "正向"
+        decision_hint = "可做"
+    elif score <= 40:
+        impact_direction = "负向"
+        decision_hint = "回避"
+    else:
+        impact_direction = "中性"
+        decision_hint = "观察"
+    strength = "弱"
+    if abs(positive_hits - negative_hits) >= 3:
+        strength = "强"
+    elif abs(positive_hits - negative_hits) >= 1:
+        strength = "中"
+    return {
+        "agent": "expert_event_hunter",
+        "as_of": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "score": score,
+        "impact_direction": impact_direction,
+        "impact_strength": strength,
+        "time_window": "1-3个交易日",
+        "regulatory_signal": "高" if regulation_hits >= 2 else "中" if regulation_hits == 1 else "低",
+        "action_hint": "事件窗口内缩短复核周期，优先跟踪公告原文",
+        "decision_hint": decision_hint,
+        "evidences": evidences[:5],
+    }
+
+
+def _run_supervisor_review(report: dict, industry_output: dict, event_output: dict) -> dict:
+    conflicts = []
+    arbitration_reason = "行业与事件信号同向"
+    result_label_cap = "可做"
+    industry_hint = industry_output.get("decision_hint", "观察")
+    event_hint = event_output.get("decision_hint", "观察")
+    event_strength = event_output.get("impact_strength", "弱")
+    if industry_hint == "可做" and event_hint == "回避":
+        result_label_cap = "观察"
+        conflicts.append("行业景气偏正向，但事件冲击为负向")
+        arbitration_reason = "优先控制短期事件冲击风险"
+        if event_strength == "强":
+            result_label_cap = "回避"
+            conflicts.append("负向事件强度高，触发强制降档")
+    elif industry_hint == "回避" and event_hint == "可做":
+        result_label_cap = "观察"
+        conflicts.append("行业景气承压，但事件短期偏正向")
+        arbitration_reason = "避免事件驱动覆盖行业下行风险"
+    elif industry_hint == "回避" and event_hint == "回避":
+        result_label_cap = "回避"
+        arbitration_reason = "行业与事件双负向共振"
+    elif industry_hint == "观察" or event_hint == "观察":
+        result_label_cap = "观察"
+        arbitration_reason = "存在中性信号，保持审慎"
+    review_evidences = []
+    review_evidences.extend(industry_output.get("evidences", [])[:2])
+    review_evidences.extend(event_output.get("evidences", [])[:2])
+    normalized_review_evidences = []
+    for item in review_evidences:
+        normalized_review_evidences.append(
+            {
+                "conclusion": f"主管复核-{item.get('conclusion', '证据')}",
+                "value": item.get("value", "N/A"),
+                "source_url": item.get("source_url", "N/A"),
+                "timestamp": item.get("timestamp", "N/A"),
+            }
+        )
+    return {
+        "industry_decision_hint": industry_hint,
+        "event_decision_hint": event_hint,
+        "conflict_items": conflicts,
+        "arbitration_reason": arbitration_reason,
+        "result_label_cap": result_label_cap,
+        "evidences": normalized_review_evidences,
+        "required_fields_checked": [
+            "audit_gate",
+            "industry_research_output",
+            "event_hunter_output",
+            "evidences",
+        ],
+    }
+
+
+def _merge_all_evidences(report: dict) -> list:
+    merged = []
+    merged.extend(report.get("evidences", []))
+    expert_outputs = report.get("expert_outputs", {})
+    merged.extend(expert_outputs.get("industry_researcher", {}).get("evidences", []))
+    merged.extend(expert_outputs.get("event_hunter", {}).get("evidences", []))
+    merged.extend(report.get("supervisor_review", {}).get("evidences", []))
+    normalized = []
+    for item in merged:
+        normalized.append(
+            {
+                "conclusion": item.get("conclusion", "N/A"),
+                "value": item.get("value", "N/A"),
+                "source_url": item.get("source_url", "N/A"),
+                "timestamp": item.get("timestamp", "N/A"),
+            }
+        )
+    return normalized
 
 
 def format_analysis_report(stock_code: str, stock_name: str, search_data: list) -> str:
@@ -237,11 +760,25 @@ def format_obsidian_markdown_report(payload: dict) -> str:
 
 def plan_analysis_route(user_request: str) -> dict:
     decision = should_use_agent_team(user_request)
-    plan = build_skill_chain_plan(use_team=decision.get("use_team", False))
+    plan = build_skill_chain_plan(
+        use_team=decision.get("execution_profile", "lite_parallel") == "full_parallel"
+    )
     return {
-        "mode": plan.get("mode", "single_flow"),
+        "mode": plan.get("mode", "agent_team"),
         "steps": plan.get("steps", []),
         "reasons": decision.get("reasons", []),
+        "execution_profile": plan.get("execution_profile", decision.get("execution_profile", "lite_parallel")),
+        "team_rules": plan.get("team_rules", {}),
+    }
+
+
+def get_minimal_shortline_upgrade_advice() -> dict:
+    recommendation = get_shortline_indicator_recommendations()
+    return {
+        "indicator_layers": recommendation.get("layers", {}),
+        "code_entry_mapping": recommendation.get("code_entry_mapping", []),
+        "minimum_rollout_order": recommendation.get("minimum_rollout_order", []),
+        "compatibility_notes": recommendation.get("compatibility_notes", []),
     }
 
 
@@ -255,7 +792,15 @@ def _build_single_stock_markdown(stock: dict, date_text: str) -> str:
     momentum = scores.get("momentum", "N/A")
     revenue = scores.get("revenue", "N/A")
     risk = scores.get("risk", "N/A")
-    final_score = _calc_weighted_score(scores)
+    sentiment_governance = _resolve_sentiment_governance(stock)
+    shortline_adjustment = _calc_shortline_adjusted_score(
+        scores,
+        stock.get("shortline_signals", {}),
+        stock.get("audit_gate", {}),
+        sentiment_governance,
+    )
+    final_score = shortline_adjustment.get("base_score", "N/A")
+    adjusted_score = shortline_adjustment.get("adjusted_score", "N/A")
     lines = [
         "---",
         f"title: {code}_{name}_{date_text}",
@@ -278,6 +823,8 @@ def _build_single_stock_markdown(stock: dict, date_text: str) -> str:
         f"| 营收质量分（35%） | {revenue} |",
         f"| 风险约束分（25%） | {risk} |",
         f"| 加权总分 | {final_score} |",
+        f"| 短线校准后总分 | {adjusted_score} |",
+        f"| 舆情调整（封顶±{shortline_adjustment.get('sentiment_cap', f'{SENTIMENT_MAX_IMPACT:.1f}')}分） | {shortline_adjustment.get('sentiment_adjustment', '0.0')} |",
         f"| 加权总分计算 | {_build_score_formula(scores)} |",
         "",
         "## 关键信息",
@@ -286,7 +833,13 @@ def _build_single_stock_markdown(stock: dict, date_text: str) -> str:
         f"- 结论标签：{label}",
         f"- 置信度：{_derive_confidence(stock)}",
     ]
+    lines.extend(_build_data_audit_lines(stock))
     lines.extend(_build_revenue_snapshot_lines(stock))
+    lines.extend(_build_shortline_signal_lines(stock))
+    lines.extend(_build_industry_research_lines(stock))
+    lines.extend(_build_event_hunter_lines(stock))
+    lines.extend(_build_supervisor_arbitration_lines(stock))
+    lines.extend(_build_sentiment_governance_lines(sentiment_governance))
     warning = _build_reversal_warning(stock)
     if warning:
         lines.extend(["", warning])
@@ -317,21 +870,36 @@ def _build_stock_pool_markdown(stocks: list, date_text: str) -> str:
         code = stock.get("stock_code", "000000")
         name = stock.get("stock_name", "未知标的")
         label = stock.get("label", "观察")
-        score = _calc_weighted_score(stock.get("scores", {}))
+        sentiment_governance = _resolve_sentiment_governance(stock)
+        shortline_adjustment = _calc_shortline_adjusted_score(
+            stock.get("scores", {}),
+            stock.get("shortline_signals", {}),
+            stock.get("audit_gate", {}),
+            sentiment_governance,
+        )
+        score = shortline_adjustment.get("adjusted_score", "N/A")
         lines.append(f"| {code} | {name} | {label} | {score} |")
     lines.append("")
     for stock in stocks:
         code = stock.get("stock_code", "000000")
         name = stock.get("stock_name", "未知标的")
+        sentiment_governance = _resolve_sentiment_governance(stock)
         lines.extend([
             f"## {name}({code})",
             "",
             f"- 标签：{stock.get('label', '观察')}",
             f"- 加权总分：{_calc_weighted_score(stock.get('scores', {}))}",
+            f"- 短线校准后总分：{_calc_shortline_adjusted_score(stock.get('scores', {}), stock.get('shortline_signals', {}), stock.get('audit_gate', {}), sentiment_governance).get('adjusted_score', 'N/A')}",
             f"- 加权总分计算：{_build_score_formula(stock.get('scores', {}))}",
             f"- 置信度：{_derive_confidence(stock)}",
         ])
+        lines.extend(_build_data_audit_lines(stock))
         lines.extend(_build_revenue_snapshot_lines(stock))
+        lines.extend(_build_shortline_signal_lines(stock))
+        lines.extend(_build_industry_research_lines(stock))
+        lines.extend(_build_event_hunter_lines(stock))
+        lines.extend(_build_supervisor_arbitration_lines(stock))
+        lines.extend(_build_sentiment_governance_lines(sentiment_governance))
         warning = _build_reversal_warning(stock)
         if warning:
             lines.extend(["", warning])
@@ -355,6 +923,72 @@ def _build_reversal_warning(stock: dict) -> str:
     return ""
 
 
+def _build_shortline_signal_lines(stock: dict) -> list:
+    recommendation = _generate_minimal_shortline_recommendation(stock)
+    signals = recommendation.get("signals", {})
+    missing = recommendation.get("missing", [])
+    label_cap = recommendation.get("label_cap", "可做")
+    downgrade_reasons = recommendation.get("downgrade_reasons", [])
+    lines = [
+        "",
+        "## 短线信号确认",
+        "",
+        f"- VWAP偏离：{signals.get('vwap_deviation', 'N/A')}%",
+        f"- ATR止损：{signals.get('atr_stop', 'N/A')}",
+        f"- 量比：{signals.get('volume_ratio', 'N/A')}",
+    ]
+    if downgrade_reasons:
+        lines.append(f"- 降级原因：{'; '.join(downgrade_reasons)}")
+        lines.append(f"- 建议上限标签：{label_cap}")
+    elif missing:
+        lines.append(f"- 降级原因：缺失关键指标 {','.join(missing)}")
+        lines.append(f"- 建议上限标签：{label_cap}")
+    elif label_cap != "可做":
+        lines.append("- 降级原因：VWAP偏离过大且量比不足，确认信号偏弱")
+        lines.append(f"- 建议上限标签：{label_cap}")
+    else:
+        lines.append("- 降级原因：无")
+    return lines
+
+
+def _generate_minimal_shortline_recommendation(stock: dict) -> dict:
+    signals = stock.get("shortline_signals", {})
+    audit_gate = stock.get("audit_gate", {})
+    required_keys = ["vwap_deviation", "atr_stop", "volume_ratio"]
+    missing = [key for key in required_keys if str(signals.get(key, "")).strip() in ("", "N/A", "未知")]
+    vwap_val = abs(_safe_float(signals.get("vwap_deviation")))
+    volume_ratio_val = _safe_float(signals.get("volume_ratio"))
+    weak_confirmation = (vwap_val >= 4.0 and 0 < volume_ratio_val < 1.0)
+    label_cap = "可做"
+    confidence_cap = "高"
+    downgrade_reasons = []
+    if not audit_gate.get("passed", True):
+        label_cap = "观察"
+        confidence_cap = "低"
+        downgrade_reasons.extend(audit_gate.get("downgrade_reasons", []))
+        if audit_gate.get("require_resample"):
+            downgrade_reasons.append("数据真实性审计未通过，需先重采再评估")
+    if weak_confirmation:
+        label_cap = "回避"
+        confidence_cap = "低"
+        downgrade_reasons.append("VWAP偏离过大且量比不足，确认信号偏弱")
+    elif missing:
+        label_cap = "观察"
+        confidence_cap = "中" if confidence_cap != "低" else confidence_cap
+        downgrade_reasons.append(f"缺失关键指标 {','.join(missing)}")
+    return {
+        "signals": {
+            "vwap_deviation": signals.get("vwap_deviation", "N/A"),
+            "atr_stop": signals.get("atr_stop", "N/A"),
+            "volume_ratio": signals.get("volume_ratio", "N/A"),
+        },
+        "missing": missing,
+        "label_cap": label_cap,
+        "confidence_cap": confidence_cap,
+        "downgrade_reasons": list(dict.fromkeys(downgrade_reasons)),
+    }
+
+
 def _calc_weighted_score(scores: dict):
     momentum = _safe_float(scores.get("momentum"))
     revenue = _safe_float(scores.get("revenue"))
@@ -363,6 +997,37 @@ def _calc_weighted_score(scores: dict):
         return "N/A"
     total = momentum * 0.4 + revenue * 0.35 + risk * 0.25
     return f"{total:.1f}"
+
+
+def _calc_shortline_adjusted_score(
+    scores: dict, shortline_signals: dict, audit_gate: dict = None, sentiment_governance: dict = None
+) -> dict:
+    base_score_text = _calc_weighted_score(scores)
+    if base_score_text == "N/A":
+        return {"base_score": "N/A", "adjusted_score": "N/A"}
+    base_score = _safe_float(base_score_text)
+    recommendation = _generate_minimal_shortline_recommendation(
+        {"shortline_signals": shortline_signals, "audit_gate": audit_gate or {}}
+    )
+    missing = recommendation.get("missing", [])
+    label_cap = recommendation.get("label_cap", "可做")
+    downgrade_reasons = recommendation.get("downgrade_reasons", [])
+    adjusted = base_score
+    if label_cap == "回避":
+        adjusted = base_score - 15
+    elif missing or downgrade_reasons:
+        adjusted = base_score - 5
+    elif label_cap == "可做":
+        adjusted = min(base_score + 3, 100)
+    sentiment_adjustment = _resolve_sentiment_adjustment(sentiment_governance or {})
+    adjusted += sentiment_adjustment
+    adjusted = min(max(adjusted, 0), 100)
+    return {
+        "base_score": f"{base_score:.1f}",
+        "adjusted_score": f"{adjusted:.1f}",
+        "sentiment_adjustment": f"{sentiment_adjustment:.1f}",
+        "sentiment_cap": f"{SENTIMENT_MAX_IMPACT:.1f}",
+    }
 
 
 def _build_score_formula(scores: dict) -> str:
@@ -374,6 +1039,9 @@ def _build_score_formula(scores: dict) -> str:
 
 
 def _derive_confidence(stock: dict) -> str:
+    audit_gate = stock.get("audit_gate", {})
+    if audit_gate and not audit_gate.get("passed", True):
+        return "低"
     snapshot = stock.get("revenue_snapshot", {})
     required_fields = ["revenue", "yoy", "qoq"]
     valid_count = 0
@@ -386,6 +1054,36 @@ def _derive_confidence(stock: dict) -> str:
     if valid_count >= 1:
         return "中"
     return "低"
+
+
+def _build_data_audit_lines(stock: dict) -> list:
+    gate = stock.get("audit_gate", {})
+    if not gate:
+        return []
+    status = "通过" if gate.get("passed", False) else "未通过"
+    lines = [
+        "",
+        "## 数据真实性审计",
+        "",
+        f"- 审计状态：{status}",
+        f"- 是否重采：{'是' if gate.get('require_resample') else '否'}",
+    ]
+    reasons = gate.get("downgrade_reasons", [])
+    if reasons:
+        lines.append(f"- 降级原因：{'; '.join(reasons)}")
+    field_results = gate.get("field_results", {})
+    if field_results:
+        lines.extend([
+            "",
+            "| 字段 | 一致性 | 来源数 | 类别数 | 结论 |",
+            "|------|--------|--------|--------|------|",
+        ])
+        for field, result in field_results.items():
+            lines.append(
+                f"| {field} | {result.get('consistency', 'N/A')} | {result.get('source_count', 0)} | "
+                f"{result.get('category_count', 0)} | {result.get('reason', 'N/A')} |"
+            )
+    return lines
 
 
 def _build_revenue_snapshot_lines(stock: dict) -> list:
@@ -411,6 +1109,58 @@ def _build_revenue_snapshot_lines(stock: dict) -> list:
     ]
 
 
+def _build_industry_research_lines(stock: dict) -> list:
+    output = _resolve_industry_output(stock)
+    if not output:
+        return []
+    return [
+        "",
+        "## 行业研究家结论",
+        "",
+        f"- 景气结论：{output.get('outlook', 'N/A')}",
+        f"- 景气拐点：{output.get('inflection', 'N/A')}",
+        f"- 竞争格局：{output.get('competition_landscape', 'N/A')}",
+        f"- 决策建议：{output.get('decision_hint', '观察')}",
+    ]
+
+
+def _build_event_hunter_lines(stock: dict) -> list:
+    output = _resolve_event_output(stock)
+    if not output:
+        return []
+    return [
+        "",
+        "## 消息面猎手结论",
+        "",
+        f"- 事件方向：{output.get('impact_direction', '中性')}",
+        f"- 冲击强度：{output.get('impact_strength', '弱')}",
+        f"- 时效窗口：{output.get('time_window', 'N/A')}",
+        f"- 监管信号：{output.get('regulatory_signal', '低')}",
+        f"- 决策建议：{output.get('decision_hint', '观察')}",
+    ]
+
+
+def _build_supervisor_arbitration_lines(stock: dict) -> list:
+    review = _resolve_supervisor_review(stock)
+    if not review:
+        return []
+    conflicts = review.get("conflict_items", [])
+    lines = [
+        "",
+        "## 主管裁决与冲突仲裁",
+        "",
+        f"- 行业建议：{review.get('industry_decision_hint', '观察')}",
+        f"- 事件建议：{review.get('event_decision_hint', '观察')}",
+        f"- 仲裁结论标签上限：{review.get('result_label_cap', '观察')}",
+        f"- 仲裁原因：{review.get('arbitration_reason', 'N/A')}",
+    ]
+    if conflicts:
+        lines.append(f"- 冲突项：{'; '.join(conflicts)}")
+    else:
+        lines.append("- 冲突项：无")
+    return lines
+
+
 def _build_evidence_lines(stock: dict) -> list:
     evidences = stock.get("evidences", [])
     if not evidences:
@@ -428,6 +1178,85 @@ def _build_evidence_lines(stock: dict) -> list:
         source_url = item.get("source_url", "N/A")
         timestamp = item.get("timestamp", "N/A")
         lines.append(f"| {conclusion} | {value} | {source_url} | {timestamp} |")
+    return lines
+
+
+def _resolve_industry_output(stock: dict) -> dict:
+    output = stock.get("industry_research_output", {})
+    if output:
+        return output
+    return stock.get("expert_outputs", {}).get("industry_researcher", {})
+
+
+def _resolve_event_output(stock: dict) -> dict:
+    output = stock.get("event_hunter_output", {})
+    if output:
+        return output
+    return stock.get("expert_outputs", {}).get("event_hunter", {})
+
+
+def _resolve_supervisor_review(stock: dict) -> dict:
+    review = stock.get("supervisor_review", {})
+    if review:
+        return review
+    industry_output = _resolve_industry_output(stock)
+    event_output = _resolve_event_output(stock)
+    if not industry_output and not event_output:
+        return {}
+    return _run_supervisor_review(stock, industry_output, event_output)
+
+
+def _resolve_sentiment_adjustment(sentiment_governance: dict) -> float:
+    raw = _safe_float(sentiment_governance.get("score_adjustment", 0.0))
+    if raw > SENTIMENT_MAX_IMPACT:
+        return SENTIMENT_MAX_IMPACT
+    if raw < -SENTIMENT_MAX_IMPACT:
+        return -SENTIMENT_MAX_IMPACT
+    return raw
+
+
+def _resolve_sentiment_governance(stock: dict) -> dict:
+    governance = stock.get("sentiment_governance", {})
+    if governance:
+        return governance
+    news = stock.get("news", [])
+    if news:
+        return _govern_news_sentiment(news)
+    return {}
+
+
+def _build_sentiment_governance_lines(sentiment_governance: dict) -> list:
+    if not sentiment_governance:
+        return []
+    lines = [
+        "",
+        "## 舆情降噪治理",
+        "",
+        f"- 去重条数：{sentiment_governance.get('deduped_count', 0)}",
+        f"- 采纳条数：{sentiment_governance.get('accepted_count', 0)}",
+        f"- 剔除条数：{sentiment_governance.get('rejected_count', 0)}",
+        f"- 平均质量分：{sentiment_governance.get('average_quality_score', '0.0')}",
+        f"- 舆情原始倾向分：{sentiment_governance.get('sentiment_score_raw', '0.00')}",
+        (
+            f"- 综合评分影响：{sentiment_governance.get('score_adjustment', '0.0')} "
+            f"(封顶±{sentiment_governance.get('max_impact_cap', f'{SENTIMENT_MAX_IMPACT:.1f}')})"
+        ),
+    ]
+    accepted_items = sentiment_governance.get("accepted_items", [])
+    if accepted_items:
+        lines.append("- 采纳依据：")
+        for item in accepted_items[:3]:
+            reason_text = "；".join(item.get("reasons", [])) or "质量达标"
+            lines.append(
+                f"  - {item.get('title', 'N/A')}（质量分{item.get('quality_score', 0)}，依据：{reason_text}）"
+            )
+    rejected_items = sentiment_governance.get("rejected_items", [])
+    if rejected_items:
+        lines.append("- 剔除依据：")
+        for item in rejected_items[:3]:
+            lines.append(
+                f"  - {item.get('title', 'N/A')}（质量分{item.get('quality_score', 0)}，原因：{item.get('reason', '质量不达标')}）"
+            )
     return lines
 
 

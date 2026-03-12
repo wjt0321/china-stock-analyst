@@ -10,11 +10,30 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import generate_report as gr  # noqa: E402
 from generate_report import parse_search_results_to_report, _generate_advice  # noqa: E402
-from stock_utils import get_search_queries  # noqa: E402
+from stock_utils import get_search_queries, get_shortline_indicator_recommendations  # noqa: E402
 from team_router import should_use_agent_team, build_skill_chain_plan  # noqa: E402
 
 
 class TestStockSkill(unittest.TestCase):
+    def _build_multi_source_core_data(self, timestamps):
+        links = [
+            "https://www.sse.com.cn/marketdata",
+            "https://quote.eastmoney.com/600000.html",
+            "https://www.yicai.com/news/stock",
+        ]
+        titles = ["交易所股价播报", "资金流向追踪", "财经快讯"]
+        rows = []
+        for idx, ts in enumerate(timestamps):
+            rows.append(
+                {
+                    "title": titles[idx],
+                    "snippet": f"最新价10.{idx}元，涨跌幅+1.{idx}%，成交额2.{idx}亿元，主力资金净流入1.{idx}亿元，散户资金净流出800万元，更新时间{ts}",
+                    "link": links[idx],
+                    "timestamp": ts,
+                }
+            )
+        return rows
+
     def test_runtime_should_expose_analysis_route_planner(self):
         self.assertTrue(callable(getattr(gr, "plan_analysis_route", None)))
 
@@ -22,10 +41,12 @@ class TestStockSkill(unittest.TestCase):
         route = gr.plan_analysis_route("请对比中国能建和首开股份并验证上周报告")
         self.assertEqual(route["mode"], "agent_team")
         self.assertIn("supervisor_review", route["steps"])
+        self.assertIn("downgrade_policy", route["team_rules"])
 
-    def test_runtime_should_choose_single_mode_for_simple_request(self):
+    def test_runtime_should_choose_team_first_mode_for_simple_request(self):
         route = gr.plan_analysis_route("分析 600519")
-        self.assertEqual(route["mode"], "single_flow")
+        self.assertEqual(route["mode"], "agent_team")
+        self.assertEqual(route["execution_profile"], "lite_parallel")
 
     def test_should_enable_agent_team_for_multi_stock_request(self):
         decision = should_use_agent_team("请分析中国能建和首开股份，给我短线建议")
@@ -37,18 +58,58 @@ class TestStockSkill(unittest.TestCase):
         self.assertTrue(decision["use_team"])
         self.assertIn("验证", decision["reasons"])
 
-    def test_should_keep_single_flow_for_simple_request(self):
+    def test_should_keep_team_first_for_simple_request(self):
         decision = should_use_agent_team("分析 600519")
-        self.assertFalse(decision["use_team"])
+        self.assertTrue(decision["use_team"])
+        self.assertEqual(decision["execution_profile"], "lite_parallel")
+
+    def test_should_auto_activate_full_parallel_for_today_collect_screen_discuss_recommend_request(self):
+        request = "请今日采集市场数据，筛选10支，再组织专家讨论，最后推荐3支"
+        decision = should_use_agent_team(request)
+        self.assertTrue(decision["use_team"])
+        self.assertEqual(decision["execution_profile"], "full_parallel")
+        self.assertIn("高意图串联任务", decision["reasons"])
+        self.assertIn("10支筛选", decision["reasons"])
+        self.assertIn("3支推荐", decision["reasons"])
+
+    def test_route_plan_should_keep_auditor_first_and_include_new_experts_for_complex_request(self):
+        request = "请今日采集市场数据，筛选10支，再组织专家讨论，最后推荐3支"
+        route = gr.plan_analysis_route(request)
+        self.assertEqual(route["mode"], "agent_team")
+        self.assertEqual(route["execution_profile"], "full_parallel")
+        self.assertEqual(route["steps"][0], "run_data_auditor")
+        self.assertIn("run_macro_expert", route["steps"])
+        self.assertIn("run_industry_researcher_expert", route["steps"])
+        self.assertIn("run_event_hunter_expert", route["steps"])
+        self.assertLess(route["steps"].index("run_data_auditor"), route["steps"].index("supervisor_review"))
+        self.assertFalse(route["team_rules"].get("continuity_guard", {}).get("single_flow_fallback", True))
 
     def test_should_build_fixed_skill_chain_for_team_mode(self):
         plan = build_skill_chain_plan(use_team=True)
         self.assertEqual(plan["mode"], "agent_team")
-        self.assertEqual(plan["steps"][0], "collect_data")
+        self.assertEqual(plan["steps"][0], "run_data_auditor")
+        self.assertIn("run_industry_researcher_expert", plan["steps"])
+        self.assertIn("run_event_hunter_expert", plan["steps"])
         self.assertIn("supervisor_review", plan["steps"])
+        self.assertIn("expert_output_schema", plan["team_rules"])
+        self.assertIn("conflict_arbitration_rules", plan["team_rules"])
+
+    def test_team_rules_should_include_continuity_guard_for_parallel_non_interrupt(self):
+        plan = build_skill_chain_plan(use_team=True)
+        continuity_guard = plan["team_rules"].get("continuity_guard", {})
+        self.assertEqual(continuity_guard.get("parallel_strategy"), "strict_fanout_join")
+        self.assertEqual(continuity_guard.get("failure_policy"), "isolate_and_continue")
+        self.assertFalse(continuity_guard.get("single_flow_fallback", True))
+        self.assertEqual(continuity_guard.get("retry_policy", {}).get("max_retries"), 2)
 
     def test_should_have_obsidian_markdown_formatter(self):
         self.assertTrue(callable(getattr(gr, "format_obsidian_markdown_report", None)))
+
+    def test_runtime_should_expose_minimal_shortline_upgrade_advice(self):
+        advice = gr.get_minimal_shortline_upgrade_advice()
+        self.assertIn("indicator_layers", advice)
+        self.assertIn("必须", advice["indicator_layers"])
+        self.assertTrue(any(item["indicator"] == "VWAP偏离" for item in advice["indicator_layers"]["必须"]))
 
     def test_single_stock_mode_should_generate_single_title(self):
         payload = {
@@ -113,6 +174,7 @@ class TestStockSkill(unittest.TestCase):
         content = gr.format_obsidian_markdown_report(payload)
         self.assertIn("加权总分计算", content)
         self.assertIn("77.8", content)
+        self.assertIn("短线校准后总分", content)
 
     def test_should_downgrade_confidence_when_revenue_fields_missing(self):
         payload = {
@@ -129,6 +191,24 @@ class TestStockSkill(unittest.TestCase):
         }
         content = gr.format_obsidian_markdown_report(payload)
         self.assertIn("置信度：低", content)
+
+    def test_should_render_shortline_downgrade_reason_when_key_indicators_missing(self):
+        payload = {
+            "date": "2026-03-10",
+            "stocks": [
+                {
+                    "stock_code": "601868",
+                    "stock_name": "中国能建",
+                    "label": "可做",
+                    "scores": {"momentum": 85, "revenue": 75, "risk": 70},
+                    "shortline_signals": {"vwap_deviation": "N/A", "atr_stop": "8.21", "volume_ratio": "2.10"},
+                }
+            ],
+        }
+        content = gr.format_obsidian_markdown_report(payload)
+        self.assertIn("短线信号确认", content)
+        self.assertIn("降级原因：缺失关键指标", content)
+        self.assertIn("建议上限标签：观察", content)
 
     def test_should_render_evidence_chain_with_url_and_minute_timestamp(self):
         payload = {
@@ -166,6 +246,350 @@ class TestStockSkill(unittest.TestCase):
         self.assertEqual(report["fund_flow"]["main"], "-16700.00")
         self.assertEqual(report["fund_flow"]["retail"], "3200.00")
 
+    def test_shortline_signals_should_extract_vwap_volume_ratio_and_atr_stop(self):
+        search_data = [
+            {
+                "title": "技术指标追踪",
+                "snippet": "VWAP偏离2.35%，量比1.92，ATR14为0.28，建议止损3.51元",
+                "link": "http://example.com",
+            }
+        ]
+        report = parse_search_results_to_report(search_data, "600000")
+        signals = report.get("shortline_signals", {})
+        self.assertEqual(signals.get("vwap_deviation"), "2.35")
+        self.assertEqual(signals.get("volume_ratio"), "1.92")
+        self.assertEqual(signals.get("atr_stop"), "3.51")
+
+    def test_data_audit_should_require_resample_when_date_rolls_back(self):
+        search_data = self._build_multi_source_core_data(
+            ["2026-03-10 09:30", "2026-03-10 09:40", "2026-03-10 10:00"]
+        )
+        report = parse_search_results_to_report(search_data, "600000", request_date="2026-03-11")
+        gate = report.get("audit_gate", {})
+        self.assertFalse(gate.get("passed"))
+        self.assertTrue(gate.get("require_resample"))
+        self.assertIn("price", gate.get("failed_fields", []))
+
+    def test_data_audit_should_mark_conflict_when_multi_source_timestamp_diverges(self):
+        search_data = self._build_multi_source_core_data(
+            ["2026-03-10 09:30", "2026-03-10 09:35", "2026-03-10 12:30"]
+        )
+        report = parse_search_results_to_report(search_data, "600000", request_date="2026-03-10")
+        gate = report.get("audit_gate", {})
+        self.assertFalse(gate.get("passed"))
+        reasons = " ".join(gate.get("downgrade_reasons", []))
+        self.assertIn("多源时间戳冲突", reasons)
+
+    def test_data_audit_should_fail_when_source_categories_are_insufficient(self):
+        search_data = [
+            {
+                "title": "股价播报",
+                "snippet": "最新价10.2元，涨跌幅+1.2%，成交额2.1亿元，更新时间2026-03-10 10:00",
+                "link": "https://example.com/price",
+                "timestamp": "2026-03-10 10:00",
+            },
+            {
+                "title": "资金流向播报",
+                "snippet": "主力资金净流入1.1亿元，散户资金净流出900万元，更新时间2026-03-10 10:05",
+                "link": "https://example.com/fund",
+                "timestamp": "2026-03-10 10:05",
+            },
+            {
+                "title": "业绩快报",
+                "snippet": "营业收入123.4亿元，同比增长12.5%，环比增长3.2%，更新时间2026-03-10 10:10",
+                "link": "https://example.com/finance",
+                "timestamp": "2026-03-10 10:10",
+            },
+        ]
+        report = parse_search_results_to_report(search_data, "600000", request_date="2026-03-10")
+        gate = report.get("audit_gate", {})
+        self.assertFalse(gate.get("passed"))
+        reasons = " ".join(gate.get("downgrade_reasons", []))
+        self.assertIn("来源类别不足", reasons)
+
+    def test_markdown_should_render_audit_downgrade_and_resample_reason(self):
+        payload = {
+            "date": "2026-03-10",
+            "stocks": [
+                {
+                    "stock_code": "601868",
+                    "stock_name": "中国能建",
+                    "label": "观察",
+                    "scores": {"momentum": 85, "revenue": 75, "risk": 70},
+                    "shortline_signals": {"vwap_deviation": "1.20", "atr_stop": "8.21", "volume_ratio": "2.10"},
+                    "audit_gate": {
+                        "passed": False,
+                        "require_resample": True,
+                        "downgrade_reasons": ["price: 日期回退", "main: 多源时间戳冲突"],
+                        "field_results": {
+                            "price": {"consistency": "不一致", "source_count": 3, "category_count": 3, "reason": "日期回退"},
+                        },
+                    },
+                }
+            ],
+        }
+        content = gr.format_obsidian_markdown_report(payload)
+        self.assertIn("数据真实性审计", content)
+        self.assertIn("审计状态：未通过", content)
+        self.assertIn("数据真实性审计未通过，需先重采再评估", content)
+
+    def test_shortline_recommendation_should_cap_label_when_signal_is_weak(self):
+        recommendation = gr._generate_minimal_shortline_recommendation(
+            {
+                "shortline_signals": {
+                    "vwap_deviation": "4.50",
+                    "volume_ratio": "0.85",
+                    "atr_stop": "3.21",
+                }
+            }
+        )
+        self.assertEqual(recommendation["label_cap"], "回避")
+
+    def test_shortline_score_should_downgrade_when_signal_is_weak(self):
+        result = gr._calc_shortline_adjusted_score(
+            {"momentum": 85, "revenue": 75, "risk": 70},
+            {"vwap_deviation": "4.50", "volume_ratio": "0.85", "atr_stop": "3.21"},
+        )
+        self.assertEqual(result["base_score"], "77.8")
+        self.assertEqual(result["adjusted_score"], "62.8")
+
+    def test_shortline_score_should_upgrade_when_confirmation_is_strong(self):
+        result = gr._calc_shortline_adjusted_score(
+            {"momentum": 85, "revenue": 75, "risk": 70},
+            {"vwap_deviation": "1.20", "volume_ratio": "2.10", "atr_stop": "3.21"},
+        )
+        self.assertEqual(result["adjusted_score"], "80.8")
+
+    def test_sentiment_governance_should_dedup_and_reject_low_quality_news(self):
+        search_data = [
+            {
+                "title": "公司回购计划公布",
+                "snippet": "2026-03-10 公司公告回购2亿元，属利好消息",
+                "link": "https://www.cninfo.com.cn/disclosure",
+                "timestamp": "2026-03-10 10:20",
+            },
+            {
+                "title": "公司回购计划公布",
+                "snippet": "2026-03-10 公司公告回购2亿元，属利好消息",
+                "link": "https://www.cninfo.com.cn/disclosure",
+                "timestamp": "2026-03-10 10:21",
+            },
+            {
+                "title": "惊天内幕：明天必涨",
+                "snippet": "论坛转载：小作文称该股必涨，未证实",
+                "link": "https://example.com/post",
+                "timestamp": "2026-03-10 10:30",
+            },
+        ]
+        report = parse_search_results_to_report(search_data, "600000")
+        governance = report.get("sentiment_governance", {})
+        self.assertEqual(governance.get("deduped_count"), 1)
+        self.assertEqual(governance.get("accepted_count"), 1)
+        self.assertGreaterEqual(governance.get("rejected_count", 0), 2)
+        rejected_reasons = " ".join(item.get("reason", "") for item in governance.get("rejected_items", []))
+        self.assertIn("重复内容", rejected_reasons)
+
+    def test_sentiment_adjustment_should_be_capped_to_2_points(self):
+        result = gr._calc_shortline_adjusted_score(
+            {"momentum": 85, "revenue": 75, "risk": 70},
+            {"vwap_deviation": "1.20", "volume_ratio": "2.10", "atr_stop": "3.21"},
+            sentiment_governance={"score_adjustment": "9.9"},
+        )
+        self.assertEqual(result["sentiment_adjustment"], "2.0")
+        self.assertEqual(result["adjusted_score"], "82.8")
+
+    def test_sentiment_negative_adjustment_should_be_capped_to_minus_2_points(self):
+        result = gr._calc_shortline_adjusted_score(
+            {"momentum": 85, "revenue": 75, "risk": 70},
+            {"vwap_deviation": "1.20", "volume_ratio": "2.10", "atr_stop": "3.21"},
+            sentiment_governance={"score_adjustment": "-9.9"},
+        )
+        self.assertEqual(result["sentiment_adjustment"], "-2.0")
+        self.assertEqual(result["adjusted_score"], "78.8")
+
+    def test_markdown_should_include_sentiment_acceptance_and_rejection_reasons(self):
+        payload = {
+            "date": "2026-03-10",
+            "stocks": [
+                {
+                    "stock_code": "601868",
+                    "stock_name": "中国能建",
+                    "label": "可做",
+                    "scores": {"momentum": 85, "revenue": 75, "risk": 70},
+                    "sentiment_governance": {
+                        "max_impact_cap": "2.0",
+                        "deduped_count": 1,
+                        "accepted_count": 1,
+                        "rejected_count": 1,
+                        "average_quality_score": "85.0",
+                        "sentiment_score_raw": "1.00",
+                        "score_adjustment": "1.7",
+                        "accepted_items": [
+                            {"title": "公司回购计划公布", "quality_score": 85, "reasons": ["包含可追溯链接", "包含可验证事实数据"]},
+                        ],
+                        "rejected_items": [
+                            {"title": "惊天内幕：明天必涨", "quality_score": 30, "reason": "存在情绪化标题词"},
+                        ],
+                    },
+                }
+            ],
+        }
+        content = gr.format_obsidian_markdown_report(payload)
+        self.assertIn("舆情降噪治理", content)
+        self.assertIn("采纳依据", content)
+        self.assertIn("剔除依据", content)
+        self.assertIn("封顶±2.0", content)
+
+    def test_parse_report_should_include_industry_event_and_supervisor_outputs(self):
+        search_data = [
+            {
+                "title": "行业景气回暖，龙头订单增长",
+                "snippet": "2026-03-10 行业需求回暖，公司中标新订单",
+                "link": "https://example.com/industry",
+                "timestamp": "2026-03-10 10:20",
+            },
+            {
+                "title": "监管问询函发布",
+                "snippet": "2026-03-10 公司收到监管问询，短期冲击偏负向",
+                "link": "https://example.com/event",
+                "timestamp": "2026-03-10 10:30",
+            },
+        ]
+        report = parse_search_results_to_report(search_data, "600000")
+        self.assertIn("industry_researcher", report.get("expert_outputs", {}))
+        self.assertIn("event_hunter", report.get("expert_outputs", {}))
+        self.assertIn("supervisor_review", report)
+        self.assertIn("result_label_cap", report.get("supervisor_review", {}))
+        self.assertTrue(len(report.get("evidences", [])) >= 2)
+
+    def test_new_expert_outputs_should_contain_required_fields(self):
+        search_data = [
+            {
+                "title": "行业竞争格局改善，需求回暖",
+                "snippet": "2026-03-10 行业景气改善，竞争格局优化",
+                "link": "https://example.com/industry-research",
+                "timestamp": "2026-03-10 09:40",
+            },
+            {
+                "title": "监管问询与风险提示公告",
+                "snippet": "2026-03-10 公司收到监管问询，短期事件冲击偏负向",
+                "link": "https://example.com/event-research",
+                "timestamp": "2026-03-10 10:10",
+            },
+        ]
+        report = parse_search_results_to_report(search_data, "600000")
+        industry_output = report.get("expert_outputs", {}).get("industry_researcher", {})
+        event_output = report.get("expert_outputs", {}).get("event_hunter", {})
+        for field in ["outlook", "inflection", "competition_landscape", "decision_hint", "evidences"]:
+            self.assertIn(field, industry_output)
+        for field in ["impact_direction", "impact_strength", "time_window", "regulatory_signal", "decision_hint", "evidences"]:
+            self.assertIn(field, event_output)
+
+    def test_complex_request_end_to_end_should_cover_full_closed_loop_dimensions(self):
+        request = "请今日采集市场数据，筛选10支，再组织专家讨论，最后推荐3支"
+        route = gr.plan_analysis_route(request)
+        self.assertEqual(route.get("execution_profile"), "full_parallel")
+        self.assertEqual(route.get("steps", [None])[0], "run_data_auditor")
+
+        search_data = [
+            {
+                "title": "交易所行情与趋势播报",
+                "snippet": "最新价10.20元，涨跌幅+1.20%，成交额2.10亿元，趋势转强，更新时间2026-03-10 10:00",
+                "link": "https://www.sse.com.cn/marketdata",
+                "timestamp": "2026-03-10 10:00",
+            },
+            {
+                "title": "资金流向监测",
+                "snippet": "主力资金净流入1.30亿元，散户资金净流出800万元，更新时间2026-03-10 10:05",
+                "link": "https://quote.eastmoney.com/600000.html",
+                "timestamp": "2026-03-10 10:05",
+            },
+            {
+                "title": "政策支持与行业竞争格局优化",
+                "snippet": "2026-03-10 政策支持加码，行业需求回暖，竞争格局改善并出现景气上行趋势",
+                "link": "https://www.yicai.com/news/stock",
+                "timestamp": "2026-03-10 10:10",
+            },
+            {
+                "title": "监管问询风险提示事件",
+                "snippet": "2026-03-10 监管问询函发布，短期事件冲击偏负向，提示交易风险",
+                "link": "https://www.cninfo.com.cn/new/disclosure",
+                "timestamp": "2026-03-10 10:12",
+            },
+            {
+                "title": "技术指标跟踪",
+                "snippet": "VWAP偏离1.20%，量比2.10，ATR14为0.28，建议止损9.78元",
+                "link": "https://xueqiu.com/S/SH600000",
+                "timestamp": "2026-03-10 10:15",
+            },
+            {
+                "title": "业绩快报",
+                "snippet": "公司2025年三季度营业收入123.4亿元，同比增长12.5%，环比增长3.2%",
+                "link": "https://www.10jqka.com.cn/stock/600000",
+                "timestamp": "2026-03-10 10:20",
+            },
+        ]
+        report = parse_search_results_to_report(search_data, "600000", request_date="2026-03-10")
+        stock_payload = {
+            "stock_code": "600000",
+            "stock_name": "浦发银行",
+            "label": report.get("supervisor_review", {}).get("result_label_cap", "观察"),
+            "scores": {"momentum": 82, "revenue": 78, "risk": 74},
+            "shortline_signals": report.get("shortline_signals", {}),
+            "audit_gate": report.get("audit_gate", {}),
+            "sentiment_governance": report.get("sentiment_governance", {}),
+            "industry_research_output": report.get("expert_outputs", {}).get("industry_researcher", {}),
+            "event_hunter_output": report.get("expert_outputs", {}).get("event_hunter", {}),
+            "supervisor_review": report.get("supervisor_review", {}),
+            "evidences": report.get("evidences", []),
+            "fund_flow": {"latest_main": "-200.00", "five_day_main": "1300.00"},
+        }
+        content = gr.format_obsidian_markdown_report({"date": "2026-03-10", "stocks": [stock_payload]})
+        for keyword in ["数据", "趋势", "资金", "风险", "政策", "竞争", "事件"]:
+            self.assertIn(keyword, content)
+        self.assertIn("数据真实性审计", content)
+        self.assertIn("行业研究家结论", content)
+        self.assertIn("消息面猎手结论", content)
+        self.assertIn("主管裁决与冲突仲裁", content)
+
+    def test_markdown_should_render_industry_event_and_arbitration_modules(self):
+        payload = {
+            "date": "2026-03-10",
+            "stocks": [
+                {
+                    "stock_code": "601868",
+                    "stock_name": "中国能建",
+                    "label": "观察",
+                    "scores": {"momentum": 85, "revenue": 75, "risk": 70},
+                    "industry_research_output": {
+                        "outlook": "景气上行",
+                        "inflection": "上行拐点初现",
+                        "competition_landscape": "头部集中度提升",
+                        "decision_hint": "可做",
+                    },
+                    "event_hunter_output": {
+                        "impact_direction": "负向",
+                        "impact_strength": "强",
+                        "time_window": "1-3个交易日",
+                        "regulatory_signal": "高",
+                        "decision_hint": "回避",
+                    },
+                    "supervisor_review": {
+                        "industry_decision_hint": "可做",
+                        "event_decision_hint": "回避",
+                        "result_label_cap": "回避",
+                        "arbitration_reason": "优先控制短期事件冲击风险",
+                        "conflict_items": ["负向事件强度高，触发强制降档"],
+                    },
+                }
+            ],
+        }
+        content = gr.format_obsidian_markdown_report(payload)
+        self.assertIn("行业研究家结论", content)
+        self.assertIn("消息面猎手结论", content)
+        self.assertIn("主管裁决与冲突仲裁", content)
+        self.assertIn("仲裁结论标签上限：回避", content)
+
     def test_advice_should_identify_main_outflow(self):
         report = {"fund_flow": {"main": "-107.98"}, "price_info": {"change": "-1.2"}}
         advice = _generate_advice(report)
@@ -179,6 +603,12 @@ class TestStockSkill(unittest.TestCase):
         self.assertNotIn("2025", joined)
         self.assertNotIn("2026年2月", joined)
         self.assertTrue(any("近5日" in q for q in queries))
+
+    def test_shortline_indicator_recommendations_should_include_code_entries(self):
+        recommendations = get_shortline_indicator_recommendations()
+        self.assertIn("code_entry_mapping", recommendations)
+        self.assertTrue(any(item["output_entry"] == "generate_report._build_shortline_signal_lines" for item in recommendations["code_entry_mapping"]))
+        self.assertEqual(recommendations["minimum_rollout_order"][0]["step"], "先路由")
 
     def test_financial_should_extract_revenue_fields(self):
         search_data = [

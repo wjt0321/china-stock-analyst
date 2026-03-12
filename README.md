@@ -1,127 +1,225 @@
-# A股智能分析助手 (china-stock-analyst)
+# 🎯 A股智能分析助手
 
-> A股短线交易分析助手，聚焦"短线交易信号 + 营收质量"双轨研判
+<div align="center">
 
-一个用于 Claude Code 的技能（Skill），提供 A 股市场的多维度分析能力。支持 5 位专家独立分析与交叉质疑，输出可复核证据链、双轨评分与明确交易条件。
+![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
+![License](https://img.shields.io/badge/License-MIT-green.svg)
+![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-purple.svg)
+![Tests](https://img.shields.io/badge/Tests-40%20Passed-success.svg)
 
-## 特性
+**📈 A股短线交易分析助手 | Team-First 并行专家系统**
 
-- **双轨研判**：短线动量 + 营收质量双重评分
-- **智能路由**：自动识别单标的分析 vs 多标的专家团队模式
-- **5 位专家团队**：基本面、技术面、量化资金、风控、宏观策略
-- **证据链追溯**：每条结论包含数据点、来源 URL 与时间戳
-- **预警信号**：资金流向反转、涨停跌停后反转等关键预警
+[核心特性](#-核心特性) • [快速开始](#-快速开始) • [执行流程](#-执行流程) • [报告能力](#-报告能力) • [更新日志](#-更新日志)
 
-## 安装
+</div>
 
-将本项目克隆到 Claude Code 技能目录：
+---
+
+## 📖 简介
+
+> 一个专为 **Claude Code** 设计的 A 股分析技能，采用「**短线交易信号 + 营收质量**」双轨研判体系。
+
+当前版本已升级为 **Team-First** 架构：默认并行专家协作、前置数据真实性审计、强化复杂指令自动激活与不中断执行。
+
+---
+
+## 🌟 核心特性
+
+| 特性 | 说明 |
+|:---:|:---|
+| 👥 **7位专家协同** | 基本面大师 / 技术分析派 / 量化模型师 / 风险控制官 / 宏观策略师 / 行业研究家 / 消息面猎手 |
+| 🧭 **Team-First 默认并行** | 默认进入 `agent_team`，复杂任务强制 `full_parallel`，不再以 `single_flow` 作为主流程 |
+| 🛡️ **数据真实性审计前置** | `run_data_auditor` 在所有分析前执行，校验日期回退、时间戳冲突、来源类别充分性 |
+| 🧹 **舆情降噪治理** | 舆情去重、质量评分、低质量剔除，且对综合评分影响封顶，避免噪声主导推荐 |
+| ⚖️ **主管冲突仲裁** | 对行业信号与事件冲击冲突进行降档仲裁，输出“可做 / 观察 / 回避”上限与原因 |
+| 🔍 **证据链可追溯** | 每条关键结论附结论值、来源 URL、分钟级时间戳与采纳/剔除依据 |
+| 🔁 **复杂指令连续性守护** | 并行节点支持隔离重试与汇总，不因局部问题回退为单线流程 |
+
+---
+
+## 🚀 快速开始
+
+### 安装
 
 ```bash
 git clone https://github.com/wjt0321/china-stock-analyst.git
 ```
 
-或将项目复制到：
-- Windows: `%USERPROFILE%\.claude\skills\china-stock-analyst`
-- macOS/Linux: `~/.claude/skills/china-stock-analyst`
+将项目复制到 Claude Code 技能目录：
 
-## 使用方法
+| 系统 | 路径 |
+|:---|:---|
+| 🪟 Windows | `%USERPROFILE%\.claude\skills\china-stock-analyst` |
+| 🍎 macOS / 🐧 Linux | `~/.claude/skills/china-stock-analyst` |
 
-### 单标的分析
+### 验证安装
 
+```bash
+python -m unittest tests/test_stock_skill.py -v
 ```
+
+当前测试结果：**40 个用例全部通过** ✅
+
+---
+
+## 💡 使用示例
+
+### 📊 单标的分析
+
+```text
 请分析 600519（茅台）
 看看珠江股份 600684 怎么样
 ```
 
-### 多标的对比分析
+### 🔍 多标的对比/讨论
 
-```
+```text
 请对比中国能建和首开股份，给我短线建议
 分析一下电力板块：晋控电力、长源电力
 ```
 
-### 验证历史报告
+### ⚡ 高意图复杂请求（自动 full_parallel）
 
+```text
+请今日采集市场数据，先筛选10支，再组织专家讨论，最后推荐3支
 ```
+
+### ✅ 验证历史报告
+
+```text
 验证股票研究报告/泰豪科技600590分析报告-20260307.md
 对比一下 中钢国际000928 3月7日的报告和今天的数据
 ```
 
-## 项目结构
+---
 
+## 🎭 执行流程
+
+### 路由模式
+
+| 模式 | 触发特征 | 说明 |
+|:---|:---|:---|
+| `full_parallel` | 多标的/验证/冲突仲裁/高意图串联任务 | 全专家并行 + 连续性守护 |
+| `lite_parallel` | 轻量请求 | 同流程范式降级，减少部分专家节点 |
+
+### 固定链路
+
+```text
+run_data_auditor
+→ collect_data
+→ run_fundamental_expert
+→ run_technical_expert
+→ run_quant_flow_expert
+→ run_risk_expert
+→ run_macro_expert
+→ run_industry_researcher_expert
+→ run_event_hunter_expert
+→ supervisor_review
+→ render_report
 ```
-china-stock-analyst/
-├── SKILL.md                    # 技能定义与核心流程
-├── CLAUDE.md                   # Claude Code 开发指南
-├── README.md                   # 本文档
-├── LICENSE                     # MIT 协议
-├── scripts/
-│   ├── team_router.py          # 执行模式路由
-│   ├── generate_report.py      # 报告生成
-│   └── stock_utils.py          # 工具函数
-├── tests/
-│   └── test_stock_skill.py     # 单元测试
-├── assets/
-│   └── 报告模板.md              # Obsidian 风格模板
-├── references/
-│   └── 估值模型说明.md          # 估值方法参考
-└── stock-reports/              # 报告输出目录
-```
-
-## 运行测试
-
-```bash
-python -m unittest tests/test_stock_skill.py
-```
-
-## 双轨评分公式
-
-```
-加权总分 = 短线动量分 × 40% + 营收质量分 × 35% + 风险约束分 × 25%
-```
-
-最终标签：**可做 / 观察 / 回避**
-
-## 执行模式
-
-| 模式 | 触发条件 | 技能链路 |
-|------|----------|----------|
-| `single_flow` | 单股票分析 | collect_data → run_single_analysis → render_report |
-| `agent_team` | 多股票/验证/对比 | collect_data → 5专家分析 → supervisor_review → render_report |
-
-## 预警信号
-
-- **资金流向反转预警**：近5日主力资金净流入 且 最新主力资金净流出
-- **涨停/跌停后反转**：大幅异动后的资金流向变化
-- **压力位触及预警**：股价触及预测止盈位后的回调风险
-
-## 报告格式
-
-输出 Obsidian 兼容的 Markdown 格式报告，包含：
-
-- 时效性与口径警告
-- 营收快照（营收/同比/环比/口径/来源）
-- 双轨评分与置信度
-- 资金流向数据与反转预警
-- 支撑位/压力位/止损位
-- 证据链表格（结论/数据/来源/时间戳）
-
-## 免责声明
-
-> 所有分析仅供参考，不构成投资建议。股市有风险，投资需谨慎。
-
-## 开源协议
-
-本项目采用 [MIT License](LICENSE) 开源协议。
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
-## 作者
-
-wjt0321
 
 ---
 
-*Made with ❤️ for A-share investors*
+## 📊 评分与治理
+
+### 双轨评分
+
+| 维度 | 权重 | 说明 |
+|:---|:---:|:---|
+| 📈 短线动量分 | 40% | 资金、量价、关键位突破 |
+| 💰 营收质量分 | 35% | 营收同比/环比、口径一致性 |
+| 🛡️ 风险约束分 | 25% | 波动率、回撤、监管与事件风险 |
+
+最终标签：`可做` / `观察` / `回避`
+
+### 舆情治理规则
+
+- 舆情先去重再评分，低质量信息不进入核心结论
+- 舆情影响分设置上下限，不允许主导综合评分
+- 报告展示采纳依据与剔除依据，支持复核
+
+---
+
+## 📋 报告能力
+
+生成报告包含以下关键模块：
+
+| 模块 | 内容 |
+|:---|:---|
+| ⏰ 时效性与口径警告 | 数据截至时间、信号有效期、营收口径说明 |
+| 🛡️ 数据真实性审计 | 日期/时间戳/多源一致性审计结论与降级策略 |
+| 💰 营收快照 | 营收/同比/环比/口径/来源/日期 |
+| 🎯 双轨评分 | 加权总分与校准后总分 |
+| 🧹 舆情降噪治理 | 采纳数、剔除数、理由与影响分 |
+| 🧠 专家独立结论 | 7位专家观点与证据链 |
+| ⚖️ 主管仲裁 | 冲突项、标签上限、仲裁原因 |
+| 🔗 证据链总表 | 结论→数据→来源→时间戳 |
+
+---
+
+## 📁 项目结构
+
+```text
+china-stock-analyst/
+├── SKILL.md
+├── README.md
+├── LICENSE
+├── scripts/
+│   ├── team_router.py
+│   ├── generate_report.py
+│   └── stock_utils.py
+├── tests/
+│   └── test_stock_skill.py
+├── assets/
+│   └── 报告模板.md
+├── references/
+│   └── 估值模型说明.md
+└── docs/
+    └── agent-teams-blueprint.md
+```
+
+---
+
+## 🧪 运行测试
+
+```bash
+python -m unittest tests/test_stock_skill.py -v
+```
+
+测试覆盖包含：
+- 路由与高意图激活
+- 数据审计与重采降级
+- 舆情降噪与评分封顶
+- 新增专家与主管仲裁
+- 复杂请求端到端闭环验证
+
+---
+
+## 📜 开源协议
+
+本项目采用 **MIT License**。详见 [LICENSE](LICENSE)。
+
+---
+
+## 📅 更新日志
+
+### v2.0.0 (2026-03-11)
+
+- 架构升级为 Team-First 默认并行执行
+- 新增数据真实性审计专家并前置门禁
+- 新增行业研究家与消息面猎手专家
+- 引入舆情降噪治理与评分影响封顶
+- 强化复杂指令自动激活与连续性守护
+- 测试扩展至 40 项并全部通过
+
+### v1.1.0 (2025-03-11)
+
+- 新增短线指标增强（VWAP偏离/ATR止损/量比）
+- 引入校准评分机制与缺失降级规则
+
+---
+
+## 📌 免责声明
+
+> ⚠️ 所有分析仅供参考，不构成投资建议。股市有风险，投资需谨慎。
+

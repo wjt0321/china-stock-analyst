@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+allowed_remote="origin"
+allowed_url="https://github.com/wjt0321/china-stock-analyst.git"
+allowed_ref="refs/heads/main"
+remote_name="${1:-}"
+remote_url="${2:-}"
+if [ "$remote_name" != "$allowed_remote" ]; then
+  echo "ERROR: 仅允许推送到 remote=$allowed_remote，当前为 $remote_name" >&2
+  exit 1
+fi
+if [ "$remote_url" != "$allowed_url" ]; then
+  echo "ERROR: 仅允许推送到 $allowed_url，当前为 $remote_url" >&2
+  exit 1
+fi
+blocked=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "${local_ref:-}" ] || continue
+  case "$local_ref" in
+    refs/heads/*)
+      if [ "$remote_ref" != "$allowed_ref" ]; then
+        echo "ERROR: 仅允许推送到 $allowed_ref，当前目标为 $remote_ref（来源 $local_ref）" >&2
+        blocked=1
+      fi
+      ;;
+    *)
+      echo "ERROR: 仅允许推送分支，当前来源引用为 $local_ref" >&2
+      blocked=1
+      ;;
+  esac
+done
+if [ "$blocked" -ne 0 ]; then
+  exit 1
+fi
+exit 0
