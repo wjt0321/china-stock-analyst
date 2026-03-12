@@ -7,6 +7,9 @@ from stock_utils import (
     infer_source_category,
     extract_timestamp_text,
     normalize_timestamp_text,
+    validate_stock_code,
+    normalize_stock_name,
+    is_stock_name_alias,
 )
 
 
@@ -19,6 +22,17 @@ INDUSTRY_POSITIVE_KEYWORDS = ["景气", "扩产", "提价", "复苏", "高增长
 INDUSTRY_NEGATIVE_KEYWORDS = ["过剩", "下行", "去库存", "收缩", "需求疲弱", "价格战"]
 EVENT_POSITIVE_KEYWORDS = ["中标", "回购", "增持", "政策支持", "订单", "突破"]
 EVENT_NEGATIVE_KEYWORDS = ["处罚", "问询", "减持", "终止", "风险提示", "监管关注"]
+EXPERT_PRICE_TOLERANCE_RATIO = 0.08
+EXPECTED_EXPERT_AGENTS = {
+    "industry_researcher": "expert_industry_researcher",
+    "event_hunter": "expert_event_hunter",
+}
+FAILURE_CODE_IDENTITY_CODE_INVALID = "IDENTITY_CODE_INVALID"
+FAILURE_CODE_IDENTITY_EVIDENCE_INSUFFICIENT = "IDENTITY_EVIDENCE_INSUFFICIENT"
+FAILURE_CODE_IDENTITY_CODE_NAME_MISMATCH = "IDENTITY_CODE_NAME_MISMATCH"
+FAILURE_CODE_IDENTITY_NAME_CODE_CONFLICT = "IDENTITY_NAME_CODE_CONFLICT"
+FAILURE_CODE_PRICE_CURRENCY_UNIT_INCONSISTENT = "PRICE_CURRENCY_UNIT_INCONSISTENT"
+FAILURE_CODE_PRICE_CURRENCY_UNIT_EVIDENCE_INSUFFICIENT = "PRICE_CURRENCY_UNIT_EVIDENCE_INSUFFICIENT"
 
 
 def parse_search_results_to_report(search_results: list, stock_code: str, request_date: str = "") -> dict:
@@ -40,6 +54,8 @@ def parse_search_results_to_report(search_results: list, stock_code: str, reques
         "shortline_signals": {},
         "news": [],
         "field_sources": {},
+        "identity_mentions": [],
+        "price_semantic_records": [],
         "audit_gate": {
             "passed": True,
             "require_resample": False,
@@ -48,6 +64,21 @@ def parse_search_results_to_report(search_results: list, stock_code: str, reques
             "next_action": "continue",
         },
         "expert_outputs": {},
+        "expert_identity_gate": {
+            "passed": True,
+            "identity_passed": True,
+            "price_passed": True,
+            "require_block": False,
+            "failed_agents": [],
+            "failed_reasons": [],
+            "next_action": "continue",
+        },
+        "process_block": {
+            "blocked": False,
+            "blocked_stage": "",
+            "reason": "",
+            "next_action": "continue",
+        },
         "supervisor_review": {},
     }
 
@@ -56,6 +87,10 @@ def parse_search_results_to_report(search_results: list, stock_code: str, reques
         snippet = result.get('snippet', '')
         link = result.get('link', '')
         source = _build_source_meta(result)
+        report["identity_mentions"].extend(_extract_identity_mentions(f"{title} {snippet}", source))
+        price_semantic = _extract_price_semantic(f"{title} {snippet}", source)
+        if price_semantic:
+            report["price_semantic_records"].append(price_semantic)
 
         # 解析价格信息
         if '最新价' in snippet or '股价' in title:
@@ -94,7 +129,14 @@ def parse_search_results_to_report(search_results: list, stock_code: str, reques
     event_output = _build_event_hunter_output(report)
     report["expert_outputs"]["industry_researcher"] = industry_output
     report["expert_outputs"]["event_hunter"] = event_output
-    report["supervisor_review"] = _run_supervisor_review(report, industry_output, event_output)
+    identity_gate = _run_expert_identity_gate(report)
+    report["expert_identity_gate"] = identity_gate
+    report["authenticity_verification"] = identity_gate.get("authenticity_summary", {})
+    if identity_gate.get("require_block"):
+        report["process_block"] = _build_process_block(identity_gate)
+        report["supervisor_review"] = _build_blocked_supervisor_review(identity_gate)
+    else:
+        report["supervisor_review"] = _run_supervisor_review(report, industry_output, event_output)
     report["evidences"] = _merge_all_evidences(report)
 
     return report
@@ -235,6 +277,100 @@ def _record_field_sources(report: dict, section: str, updates: dict, source: dic
                 "timestamp": source.get("timestamp", "N/A"),
             }
         )
+
+
+def _extract_identity_mentions(text: str, source: dict) -> list:
+    mentions = []
+    merged_text = text or ""
+    for code in re.findall(r"(?<!\d)([036]\d{5})(?!\d)", merged_text):
+        name_candidates = _extract_stock_name_candidates(merged_text, code)
+        for candidate in name_candidates:
+            normalized_name = normalize_stock_name(candidate)
+            if not normalized_name:
+                continue
+            mentions.append(
+                {
+                    "stock_code": code,
+                    "stock_name": normalized_name,
+                    "raw_stock_name": candidate,
+                    "source_url": source.get("source_url", "N/A"),
+                    "source_title": source.get("source_title", "N/A"),
+                    "source_category": source.get("source_category", "其他来源"),
+                    "timestamp": source.get("timestamp", "N/A"),
+                }
+            )
+    unique = []
+    seen = set()
+    for item in mentions:
+        key = (
+            item.get("stock_code", ""),
+            item.get("stock_name", ""),
+            item.get("source_url", ""),
+            item.get("timestamp", ""),
+        )
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+    return unique
+
+
+def _extract_stock_name_candidates(text: str, stock_code: str) -> list:
+    candidates = []
+    noise_keywords = [
+        "最新价", "行情", "播报", "快讯", "报价", "更新", "盘中", "交易", "数据", "资讯",
+        "行业", "竞争", "格局", "需求", "回暖", "监管", "问询", "风险", "公告", "事件", "冲击", "趋势",
+    ]
+    patterns = [
+        rf"([\u4e00-\u9fa5A-Za-z\*STＳＴ]{{2,20}})\s*[\(（]?{stock_code}[\)）]?",
+        rf"{stock_code}\s*[-—:：]?\s*([\u4e00-\u9fa5A-Za-z\*STＳＴ]{{2,20}})",
+        rf"([\u4e00-\u9fa5A-Za-z\*STＳＴ]{{2,20}})\s*\(\s*{stock_code}\s*\)",
+    ]
+    for pattern in patterns:
+        for match in re.findall(pattern, text or ""):
+            cleaned = re.sub(r"^(股票|个股|代码|标的)", "", match).strip(" -—:：，,。.;；")
+            if cleaned and re.search(r"[\u4e00-\u9fa5A-Za-z]", cleaned):
+                if any(keyword in cleaned for keyword in noise_keywords):
+                    continue
+                candidates.append(cleaned)
+    unique = []
+    seen = set()
+    for item in candidates:
+        key = item.lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+    return unique
+
+
+def _extract_price_semantic(text: str, source: dict) -> dict:
+    merged_text = text or ""
+    if not re.search(r"(最新价|股价|收盘价|现价|报价)", merged_text):
+        return {}
+    currency = "CNY"
+    if re.search(r"(美元|USD|美金)", merged_text, re.IGNORECASE):
+        currency = "USD"
+    elif re.search(r"(港元|HKD)", merged_text, re.IGNORECASE):
+        currency = "HKD"
+    elif re.search(r"(人民币|CNY|RMB|元)", merged_text, re.IGNORECASE):
+        currency = "CNY"
+    unit = "元/股"
+    if re.search(r"(分/股|分每股|分人民币)", merged_text):
+        unit = "分/股"
+    elif re.search(r"(港元/股|美元/股|元/股|每股)", merged_text):
+        if currency == "USD":
+            unit = "美元/股"
+        elif currency == "HKD":
+            unit = "港元/股"
+        else:
+            unit = "元/股"
+    return {
+        "currency": currency,
+        "unit": unit,
+        "source_url": source.get("source_url", "N/A"),
+        "source_title": source.get("source_title", "N/A"),
+        "source_category": source.get("source_category", "其他来源"),
+        "timestamp": source.get("timestamp", "N/A"),
+    }
 
 
 def _run_data_authenticity_audit(report: dict, request_date: str = "") -> dict:
@@ -462,6 +598,8 @@ def _classify_news_sentiment(text: str) -> int:
 
 def _build_industry_research_output(report: dict) -> dict:
     news_items = report.get("news", [])
+    stock_code = report.get("stock_code", "")
+    anchor_price = report.get("price_info", {}).get("price", "N/A")
     positive_hits = 0
     negative_hits = 0
     evidences = []
@@ -498,6 +636,8 @@ def _build_industry_research_output(report: dict) -> dict:
         inflection = "下行拐点风险增加"
     return {
         "agent": "expert_industry_researcher",
+        "stock_code": stock_code,
+        "as_of_price": str(anchor_price),
         "as_of": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "score": score,
         "outlook": outlook,
@@ -512,6 +652,8 @@ def _build_industry_research_output(report: dict) -> dict:
 
 def _build_event_hunter_output(report: dict) -> dict:
     news_items = report.get("news", [])
+    stock_code = report.get("stock_code", "")
+    anchor_price = report.get("price_info", {}).get("price", "N/A")
     positive_hits = 0
     negative_hits = 0
     regulation_hits = 0
@@ -552,6 +694,8 @@ def _build_event_hunter_output(report: dict) -> dict:
         strength = "中"
     return {
         "agent": "expert_event_hunter",
+        "stock_code": stock_code,
+        "as_of_price": str(anchor_price),
         "as_of": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "score": score,
         "impact_direction": impact_direction,
@@ -561,6 +705,248 @@ def _build_event_hunter_output(report: dict) -> dict:
         "action_hint": "事件窗口内缩短复核周期，优先跟踪公告原文",
         "decision_hint": decision_hint,
         "evidences": evidences[:5],
+    }
+
+
+def _validate_identity_with_sources(report: dict, expected_code: str) -> dict:
+    mentions = report.get("identity_mentions", [])
+    matched = [item for item in mentions if item.get("stock_code") == expected_code]
+    categories = {item.get("source_category", "其他来源") for item in matched}
+    reasons = []
+    reason_codes = []
+    if len(categories) < 2:
+        reasons.append(f"身份来源类别不足({len(categories)}/2)")
+        reason_codes.append(FAILURE_CODE_IDENTITY_EVIDENCE_INSUFFICIENT)
+    canonical_name = ""
+    canonical_candidates = []
+    for item in matched:
+        normalized = normalize_stock_name(item.get("stock_name", ""))
+        if normalized:
+            canonical_candidates.append(normalized)
+    canonical_candidates = list(dict.fromkeys(canonical_candidates))
+    if canonical_candidates:
+        canonical_name = canonical_candidates[0]
+        for candidate in canonical_candidates[1:]:
+            if not is_stock_name_alias(canonical_name, candidate):
+                reasons.append(f"代码{expected_code}对应名称冲突: {canonical_name} vs {candidate}")
+                reason_codes.append(FAILURE_CODE_IDENTITY_CODE_NAME_MISMATCH)
+                break
+    else:
+        reasons.append(f"未提取到代码{expected_code}对应名称")
+        reason_codes.append(FAILURE_CODE_IDENTITY_EVIDENCE_INSUFFICIENT)
+    conflicting_mentions = []
+    if canonical_name:
+        for item in mentions:
+            item_name = item.get("stock_name", "")
+            if not is_stock_name_alias(item_name, canonical_name):
+                continue
+            if item.get("stock_code") != expected_code:
+                conflicting_mentions.append(item)
+        if conflicting_mentions:
+            conflict_codes = sorted({item.get("stock_code", "") for item in conflicting_mentions if item.get("stock_code")})
+            reasons.append(f"名称{canonical_name}映射到多个代码: {expected_code} vs {','.join(conflict_codes)}")
+            reason_codes.append(FAILURE_CODE_IDENTITY_NAME_CODE_CONFLICT)
+    evidences = []
+    for item in matched[:6]:
+        evidences.append(
+            {
+                "conclusion": "身份映射证据",
+                "value": f"{item.get('stock_name', 'N/A')}({item.get('stock_code', 'N/A')})",
+                "source_url": item.get("source_url", "N/A"),
+                "timestamp": item.get("timestamp", "N/A"),
+                "source_category": item.get("source_category", "其他来源"),
+            }
+        )
+    return {
+        "passed": len(reasons) == 0,
+        "reasons": reasons,
+        "reason_codes": list(dict.fromkeys(reason_codes)),
+        "evidences": evidences,
+        "summary": {
+            "canonical_name": canonical_name or "N/A",
+            "evidence_count": len(matched),
+            "category_count": len(categories),
+        },
+    }
+
+
+def _validate_price_semantics(report: dict) -> dict:
+    records = report.get("price_semantic_records", [])
+    if not records:
+        return {
+            "passed": True,
+            "reasons": [],
+            "reason_codes": [],
+            "evidences": [],
+            "summary": {"currency": "N/A", "unit": "N/A", "category_count": 0},
+        }
+    categories = {item.get("source_category", "其他来源") for item in records}
+    reasons = []
+    reason_codes = []
+    if len(categories) < 2:
+        reasons.append(f"币种单位来源类别不足({len(categories)}/2)")
+        reason_codes.append(FAILURE_CODE_PRICE_CURRENCY_UNIT_EVIDENCE_INSUFFICIENT)
+    currencies = {item.get("currency", "N/A") for item in records}
+    units = {item.get("unit", "N/A") for item in records}
+    if len(currencies) > 1 or len(units) > 1:
+        reasons.append(f"币种或单位不一致: currency={','.join(sorted(currencies))}; unit={','.join(sorted(units))}")
+        reason_codes.append(FAILURE_CODE_PRICE_CURRENCY_UNIT_INCONSISTENT)
+    currency = next(iter(currencies)) if currencies else "N/A"
+    unit = next(iter(units)) if units else "N/A"
+    evidences = []
+    for item in records[:6]:
+        evidences.append(
+            {
+                "conclusion": "价格币种单位证据",
+                "value": f"{item.get('currency', 'N/A')} {item.get('unit', 'N/A')}",
+                "source_url": item.get("source_url", "N/A"),
+                "timestamp": item.get("timestamp", "N/A"),
+                "source_category": item.get("source_category", "其他来源"),
+            }
+        )
+    return {
+        "passed": len(reasons) == 0,
+        "reasons": reasons,
+        "reason_codes": list(dict.fromkeys(reason_codes)),
+        "evidences": evidences,
+        "summary": {
+            "currency": currency,
+            "unit": unit,
+            "category_count": len(categories),
+            "record_count": len(records),
+        },
+    }
+
+
+def _run_expert_identity_gate(report: dict) -> dict:
+    stock_code = report.get("stock_code", "")
+    canonical_price = _safe_float(report.get("price_info", {}).get("price"))
+    expected_agents = EXPECTED_EXPERT_AGENTS
+    failed_agents = []
+    failed_reasons = []
+    failed_reason_codes = []
+    identity_passed = validate_stock_code(stock_code)
+    price_passed = canonical_price > 0
+    if not identity_passed:
+        failed_reasons.append(f"stock_code非法: {stock_code or 'N/A'}")
+        failed_reason_codes.append(FAILURE_CODE_IDENTITY_CODE_INVALID)
+    if not price_passed:
+        failed_reasons.append("缺失可用价格锚点")
+    identity_source_result = _validate_identity_with_sources(report, stock_code)
+    if not identity_source_result.get("passed", True):
+        identity_passed = False
+        failed_reasons.extend(identity_source_result.get("reasons", []))
+        failed_reason_codes.extend(identity_source_result.get("reason_codes", []))
+    price_semantic_result = _validate_price_semantics(report)
+    if not price_semantic_result.get("passed", True):
+        price_passed = False
+        failed_reasons.extend(price_semantic_result.get("reasons", []))
+        failed_reason_codes.extend(price_semantic_result.get("reason_codes", []))
+    expert_outputs = report.get("expert_outputs", {})
+    for expert_key, expected_agent in expected_agents.items():
+        output = expert_outputs.get(expert_key, {})
+        actual_agent = output.get("agent", "")
+        output_code = output.get("stock_code", "")
+        output_price = _safe_float(output.get("as_of_price"))
+        if actual_agent != expected_agent:
+            identity_passed = False
+            failed_agents.append(expert_key)
+            failed_reasons.append(f"{expert_key}身份不匹配: {actual_agent or 'N/A'}")
+        if output_code and output_code != stock_code:
+            identity_passed = False
+            failed_agents.append(expert_key)
+            failed_reasons.append(f"{expert_key}标的不一致: {output_code} != {stock_code}")
+        if canonical_price > 0 and output_price > 0:
+            drift = abs(output_price - canonical_price) / canonical_price
+            if drift > EXPERT_PRICE_TOLERANCE_RATIO:
+                price_passed = False
+                failed_agents.append(expert_key)
+                failed_reasons.append(
+                    f"{expert_key}价格偏差超阈值({drift * 100:.2f}%>{EXPERT_PRICE_TOLERANCE_RATIO * 100:.1f}%)"
+                )
+        elif canonical_price > 0 and output_price <= 0:
+            price_passed = False
+            failed_agents.append(expert_key)
+            failed_reasons.append(f"{expert_key}缺失价格锚点")
+    passed = identity_passed and price_passed
+    risks = []
+    if not identity_passed:
+        risks.append("身份一致性存在风险，需重采并复核代码名称映射")
+    if not price_passed:
+        risks.append("价格语义一致性存在风险，需核对币种与单位口径")
+    if not risks:
+        risks.append("未发现身份与价格真实性风险")
+    all_evidences = []
+    all_evidences.extend(identity_source_result.get("evidences", []))
+    all_evidences.extend(price_semantic_result.get("evidences", []))
+    latest_timestamp = "N/A"
+    valid_timestamps = []
+    for item in all_evidences:
+        parsed = _parse_timestamp(item.get("timestamp", ""))
+        if parsed:
+            valid_timestamps.append(parsed)
+    if valid_timestamps:
+        latest_timestamp = max(valid_timestamps).strftime("%Y-%m-%d %H:%M")
+    return {
+        "agent": "expert_identifier_agent",
+        "passed": passed,
+        "identity_passed": identity_passed,
+        "price_passed": price_passed,
+        "require_block": not passed,
+        "failed_agents": sorted(set(failed_agents)),
+        "failed_reasons": list(dict.fromkeys(failed_reasons)),
+        "failed_reason_codes": list(dict.fromkeys(failed_reason_codes)),
+        "next_action": "block_and_resample" if not passed else "continue",
+        "checked_agents": list(expected_agents.values()),
+        "checked_stock_code": stock_code or "N/A",
+        "reference_price": f"{canonical_price:.2f}" if canonical_price > 0 else "N/A",
+        "identity_source_evidences": identity_source_result.get("evidences", []),
+        "price_semantic_evidences": price_semantic_result.get("evidences", []),
+        "identity_source_summary": identity_source_result.get("summary", {}),
+        "price_semantic_summary": price_semantic_result.get("summary", {}),
+        "authenticity_summary": {
+            "identity_status": "通过" if identity_passed else "未通过",
+            "price_status": "通过" if price_passed else "未通过",
+            "source_count": len(all_evidences),
+            "latest_timestamp": latest_timestamp,
+            "risk_tips": risks,
+            "failed_reason_codes": list(dict.fromkeys(failed_reason_codes)),
+        },
+    }
+
+
+def _build_process_block(identity_gate: dict) -> dict:
+    failed = identity_gate.get("failed_reasons", [])
+    return {
+        "blocked": True,
+        "blocked_stage": "supervisor_review",
+        "reason": "；".join(failed) if failed else "专家身份与价格校验未通过",
+        "next_action": "重采样并重新执行专家鉴别",
+    }
+
+
+def _build_blocked_supervisor_review(identity_gate: dict) -> dict:
+    reason = "；".join(identity_gate.get("failed_reasons", [])) or "专家身份与价格校验未通过"
+    return {
+        "industry_decision_hint": "观察",
+        "event_decision_hint": "观察",
+        "conflict_items": ["流程已阻断：专家鉴别失败"],
+        "arbitration_reason": reason,
+        "result_label_cap": "观察",
+        "evidences": [
+            {
+                "conclusion": "流程阻断",
+                "value": reason,
+                "source_url": "N/A",
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            }
+        ],
+        "required_fields_checked": [
+            "audit_gate",
+            "expert_identity_gate",
+            "process_block",
+            "evidences",
+        ],
     }
 
 
@@ -797,6 +1183,7 @@ def _build_single_stock_markdown(stock: dict, date_text: str) -> str:
         scores,
         stock.get("shortline_signals", {}),
         stock.get("audit_gate", {}),
+        stock.get("expert_identity_gate", {}),
         sentiment_governance,
     )
     final_score = shortline_adjustment.get("base_score", "N/A")
@@ -834,6 +1221,9 @@ def _build_single_stock_markdown(stock: dict, date_text: str) -> str:
         f"- 置信度：{_derive_confidence(stock)}",
     ]
     lines.extend(_build_data_audit_lines(stock))
+    lines.extend(_build_authenticity_verification_lines(stock))
+    lines.extend(_build_expert_identity_lines(stock))
+    lines.extend(_build_process_block_lines(stock))
     lines.extend(_build_revenue_snapshot_lines(stock))
     lines.extend(_build_shortline_signal_lines(stock))
     lines.extend(_build_industry_research_lines(stock))
@@ -875,6 +1265,7 @@ def _build_stock_pool_markdown(stocks: list, date_text: str) -> str:
             stock.get("scores", {}),
             stock.get("shortline_signals", {}),
             stock.get("audit_gate", {}),
+            stock.get("expert_identity_gate", {}),
             sentiment_governance,
         )
         score = shortline_adjustment.get("adjusted_score", "N/A")
@@ -889,11 +1280,14 @@ def _build_stock_pool_markdown(stocks: list, date_text: str) -> str:
             "",
             f"- 标签：{stock.get('label', '观察')}",
             f"- 加权总分：{_calc_weighted_score(stock.get('scores', {}))}",
-            f"- 短线校准后总分：{_calc_shortline_adjusted_score(stock.get('scores', {}), stock.get('shortline_signals', {}), stock.get('audit_gate', {}), sentiment_governance).get('adjusted_score', 'N/A')}",
+            f"- 短线校准后总分：{_calc_shortline_adjusted_score(stock.get('scores', {}), stock.get('shortline_signals', {}), stock.get('audit_gate', {}), stock.get('expert_identity_gate', {}), sentiment_governance).get('adjusted_score', 'N/A')}",
             f"- 加权总分计算：{_build_score_formula(stock.get('scores', {}))}",
             f"- 置信度：{_derive_confidence(stock)}",
         ])
         lines.extend(_build_data_audit_lines(stock))
+        lines.extend(_build_authenticity_verification_lines(stock))
+        lines.extend(_build_expert_identity_lines(stock))
+        lines.extend(_build_process_block_lines(stock))
         lines.extend(_build_revenue_snapshot_lines(stock))
         lines.extend(_build_shortline_signal_lines(stock))
         lines.extend(_build_industry_research_lines(stock))
@@ -954,6 +1348,7 @@ def _build_shortline_signal_lines(stock: dict) -> list:
 def _generate_minimal_shortline_recommendation(stock: dict) -> dict:
     signals = stock.get("shortline_signals", {})
     audit_gate = stock.get("audit_gate", {})
+    identity_gate = stock.get("expert_identity_gate", {})
     required_keys = ["vwap_deviation", "atr_stop", "volume_ratio"]
     missing = [key for key in required_keys if str(signals.get(key, "")).strip() in ("", "N/A", "未知")]
     vwap_val = abs(_safe_float(signals.get("vwap_deviation")))
@@ -968,6 +1363,11 @@ def _generate_minimal_shortline_recommendation(stock: dict) -> dict:
         downgrade_reasons.extend(audit_gate.get("downgrade_reasons", []))
         if audit_gate.get("require_resample"):
             downgrade_reasons.append("数据真实性审计未通过，需先重采再评估")
+    if identity_gate and not identity_gate.get("passed", True):
+        label_cap = "回避"
+        confidence_cap = "低"
+        downgrade_reasons.append("专家身份与价格校验未通过，流程阻断")
+        downgrade_reasons.extend(identity_gate.get("failed_reasons", []))
     if weak_confirmation:
         label_cap = "回避"
         confidence_cap = "低"
@@ -1000,14 +1400,22 @@ def _calc_weighted_score(scores: dict):
 
 
 def _calc_shortline_adjusted_score(
-    scores: dict, shortline_signals: dict, audit_gate: dict = None, sentiment_governance: dict = None
+    scores: dict,
+    shortline_signals: dict,
+    audit_gate: dict = None,
+    expert_identity_gate: dict = None,
+    sentiment_governance: dict = None,
 ) -> dict:
     base_score_text = _calc_weighted_score(scores)
     if base_score_text == "N/A":
         return {"base_score": "N/A", "adjusted_score": "N/A"}
     base_score = _safe_float(base_score_text)
     recommendation = _generate_minimal_shortline_recommendation(
-        {"shortline_signals": shortline_signals, "audit_gate": audit_gate or {}}
+        {
+            "shortline_signals": shortline_signals,
+            "audit_gate": audit_gate or {},
+            "expert_identity_gate": expert_identity_gate or {},
+        }
     )
     missing = recommendation.get("missing", [])
     label_cap = recommendation.get("label_cap", "可做")
@@ -1042,6 +1450,9 @@ def _derive_confidence(stock: dict) -> str:
     audit_gate = stock.get("audit_gate", {})
     if audit_gate and not audit_gate.get("passed", True):
         return "低"
+    identity_gate = stock.get("expert_identity_gate", {})
+    if identity_gate and not identity_gate.get("passed", True):
+        return "低"
     snapshot = stock.get("revenue_snapshot", {})
     required_fields = ["revenue", "yoy", "qoq"]
     valid_count = 0
@@ -1054,6 +1465,42 @@ def _derive_confidence(stock: dict) -> str:
     if valid_count >= 1:
         return "中"
     return "低"
+
+
+def _build_authenticity_verification_lines(stock: dict) -> list:
+    gate = stock.get("expert_identity_gate", {})
+    summary = stock.get("authenticity_verification", {}) or gate.get("authenticity_summary", {})
+    if not gate and not summary:
+        return []
+    identity_status = summary.get("identity_status", "通过" if gate.get("identity_passed", False) else "未通过")
+    price_status = summary.get("price_status", "通过" if gate.get("price_passed", False) else "未通过")
+    source_count = summary.get("source_count", 0)
+    latest_timestamp = summary.get("latest_timestamp", "N/A")
+    reason_codes = summary.get("failed_reason_codes", gate.get("failed_reason_codes", []))
+    identity_summary = gate.get("identity_source_summary", {})
+    price_summary = gate.get("price_semantic_summary", {})
+    lines = [
+        "",
+        "## 数据真实性鉴别结果",
+        "",
+        f"- 身份校验结果：{identity_status}",
+        f"- 价格校验结果：{price_status}",
+        f"- 来源证据条数：{source_count}",
+        f"- 最近校验时间戳：{latest_timestamp}",
+        (
+            f"- 来源摘要：身份证据{identity_summary.get('evidence_count', 0)}条/"
+            f"{identity_summary.get('category_count', 0)}类；"
+            f"币种单位证据{price_summary.get('record_count', 0)}条/"
+            f"{price_summary.get('category_count', 0)}类"
+        ),
+        f"- 币种/单位：{price_summary.get('currency', 'N/A')} / {price_summary.get('unit', 'N/A')}",
+    ]
+    if reason_codes:
+        lines.append(f"- 失败原因编码：{'; '.join(reason_codes)}")
+    risks = summary.get("risk_tips", [])
+    if risks:
+        lines.append(f"- 风险提示：{'; '.join(risks)}")
+    return lines
 
 
 def _build_data_audit_lines(stock: dict) -> list:
@@ -1083,6 +1530,48 @@ def _build_data_audit_lines(stock: dict) -> list:
                 f"| {field} | {result.get('consistency', 'N/A')} | {result.get('source_count', 0)} | "
                 f"{result.get('category_count', 0)} | {result.get('reason', 'N/A')} |"
             )
+    return lines
+
+
+def _build_expert_identity_lines(stock: dict) -> list:
+    gate = stock.get("expert_identity_gate", {})
+    if not gate:
+        return []
+    status = "通过" if gate.get("passed", False) else "未通过"
+    lines = [
+        "",
+        "## 专家鉴别与身份价格校验",
+        "",
+        f"- 鉴别状态：{status}",
+        f"- 身份校验：{'通过' if gate.get('identity_passed', False) else '未通过'}",
+        f"- 价格校验：{'通过' if gate.get('price_passed', False) else '未通过'}",
+        f"- 校验股票代码：{gate.get('checked_stock_code', 'N/A')}",
+        f"- 价格锚点：{gate.get('reference_price', 'N/A')}元",
+    ]
+    failed_agents = gate.get("failed_agents", [])
+    if failed_agents:
+        lines.append(f"- 失败专家：{','.join(failed_agents)}")
+    failed_reasons = gate.get("failed_reasons", [])
+    if failed_reasons:
+        lines.append(f"- 失败原因：{'; '.join(failed_reasons)}")
+    return lines
+
+
+def _build_process_block_lines(stock: dict) -> list:
+    process_block = stock.get("process_block", {})
+    if not process_block:
+        return []
+    blocked = process_block.get("blocked", False)
+    lines = [
+        "",
+        "## 流程阻断",
+        "",
+        f"- 阻断状态：{'已阻断' if blocked else '未阻断'}",
+    ]
+    if blocked:
+        lines.append(f"- 阻断阶段：{process_block.get('blocked_stage', 'N/A')}")
+        lines.append(f"- 阻断原因：{process_block.get('reason', 'N/A')}")
+        lines.append(f"- 后续动作：{process_block.get('next_action', 'N/A')}")
     return lines
 
 
@@ -1199,6 +1688,9 @@ def _resolve_supervisor_review(stock: dict) -> dict:
     review = stock.get("supervisor_review", {})
     if review:
         return review
+    identity_gate = stock.get("expert_identity_gate", {})
+    if identity_gate and not identity_gate.get("passed", True):
+        return _build_blocked_supervisor_review(identity_gate)
     industry_output = _resolve_industry_output(stock)
     event_output = _resolve_event_output(stock)
     if not industry_output and not event_output:

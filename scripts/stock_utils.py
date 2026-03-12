@@ -6,6 +6,55 @@ import re
 from datetime import datetime
 from urllib.parse import urlparse
 
+
+STOCK_NAME_ALIAS_MAP = {
+    "浦发银行": ["上海浦东发展银行", "浦发"],
+    "招商银行": ["招行"],
+    "中国能建": ["中国能源建设", "中国能源建设股份有限公司"],
+    "首开股份": ["首开", "北京首都开发股份有限公司"],
+    "晋控电力": ["山西晋控电力", "晋能控股电力"],
+}
+
+
+def normalize_stock_name(name: str) -> str:
+    """
+    统一股票名称表达，支持常见噪声清洗与别名归一
+    """
+    raw = (name or "").strip()
+    if not raw:
+        return ""
+    normalized = re.sub(r"[\s·\-\(\)（）【】\[\]A股港股美股]+", "", raw)
+    normalized = (
+        normalized.replace("有限公司", "")
+        .replace("股份有限公司", "")
+        .replace("股份", "")
+        .replace("集团", "")
+        .replace("控股", "")
+        .replace("有限责任公司", "")
+    )
+    normalized = normalized.replace("*ST", "ST").replace("ＳＴ", "ST")
+    if normalized.upper().startswith("ST"):
+        normalized = normalized[2:]
+    for canonical, aliases in STOCK_NAME_ALIAS_MAP.items():
+        candidates = [canonical, *aliases]
+        normalized_candidates = {
+            re.sub(r"[\s·\-\(\)（）【】\[\]]+", "", item): canonical for item in candidates
+        }
+        if normalized in normalized_candidates:
+            return canonical
+    return normalized
+
+
+def is_stock_name_alias(left: str, right: str) -> bool:
+    """
+    判断两个股票名称是否属于同一主体（含别名）
+    """
+    normalized_left = normalize_stock_name(left)
+    normalized_right = normalize_stock_name(right)
+    if not normalized_left or not normalized_right:
+        return False
+    return normalized_left == normalized_right
+
 def validate_stock_code(code: str) -> bool:
     """
     验证股票代码格式

@@ -81,7 +81,9 @@ class TestStockSkill(unittest.TestCase):
         self.assertIn("run_macro_expert", route["steps"])
         self.assertIn("run_industry_researcher_expert", route["steps"])
         self.assertIn("run_event_hunter_expert", route["steps"])
+        self.assertIn("run_expert_identifier_agent", route["steps"])
         self.assertLess(route["steps"].index("run_data_auditor"), route["steps"].index("supervisor_review"))
+        self.assertLess(route["steps"].index("run_expert_identifier_agent"), route["steps"].index("supervisor_review"))
         self.assertFalse(route["team_rules"].get("continuity_guard", {}).get("single_flow_fallback", True))
 
     def test_should_build_fixed_skill_chain_for_team_mode(self):
@@ -90,9 +92,11 @@ class TestStockSkill(unittest.TestCase):
         self.assertEqual(plan["steps"][0], "run_data_auditor")
         self.assertIn("run_industry_researcher_expert", plan["steps"])
         self.assertIn("run_event_hunter_expert", plan["steps"])
+        self.assertIn("run_expert_identifier_agent", plan["steps"])
         self.assertIn("supervisor_review", plan["steps"])
         self.assertIn("expert_output_schema", plan["team_rules"])
         self.assertIn("conflict_arbitration_rules", plan["team_rules"])
+        self.assertIn("run_expert_identifier_agent", plan["team_rules"].get("expert_output_schema", {}))
 
     def test_team_rules_should_include_continuity_guard_for_parallel_non_interrupt(self):
         plan = build_skill_chain_plan(use_team=True)
@@ -465,14 +469,20 @@ class TestStockSkill(unittest.TestCase):
     def test_new_expert_outputs_should_contain_required_fields(self):
         search_data = [
             {
-                "title": "行业竞争格局改善，需求回暖",
-                "snippet": "2026-03-10 行业景气改善，竞争格局优化",
-                "link": "https://example.com/industry-research",
+                "title": "浦发银行(600000) 交易所行情播报",
+                "snippet": "浦发银行(600000) 最新价10.20元/股，涨跌幅+1.10%，成交额2.30亿元，更新时间2026-03-10 10:05",
+                "link": "https://www.sse.com.cn/marketdata",
+                "timestamp": "2026-03-10 10:05",
+            },
+            {
+                "title": "上海浦东发展银行600000 行业竞争格局改善，需求回暖",
+                "snippet": "2026-03-10 上海浦东发展银行600000 最新价10.18元/股，行业景气改善，竞争格局优化",
+                "link": "https://www.yicai.com/news/industry-research",
                 "timestamp": "2026-03-10 09:40",
             },
             {
-                "title": "监管问询与风险提示公告",
-                "snippet": "2026-03-10 公司收到监管问询，短期事件冲击偏负向",
+                "title": "浦发银行(600000) 监管问询与风险提示公告",
+                "snippet": "2026-03-10 浦发银行(600000) 收到监管问询，短期事件冲击偏负向",
                 "link": "https://example.com/event-research",
                 "timestamp": "2026-03-10 10:10",
             },
@@ -484,6 +494,176 @@ class TestStockSkill(unittest.TestCase):
             self.assertIn(field, industry_output)
         for field in ["impact_direction", "impact_strength", "time_window", "regulatory_signal", "decision_hint", "evidences"]:
             self.assertIn(field, event_output)
+        self.assertIn("expert_identity_gate", report)
+        self.assertTrue(report.get("expert_identity_gate", {}).get("passed"))
+        self.assertFalse(report.get("process_block", {}).get("blocked"))
+
+    def test_identity_gate_should_support_code_name_alias_bi_directional_check(self):
+        search_data = [
+            {
+                "title": "浦发银行(600000) 行情播报",
+                "snippet": "浦发银行(600000) 最新价10.20元/股，更新时间2026-03-10 10:05",
+                "link": "https://www.sse.com.cn/marketdata",
+                "timestamp": "2026-03-10 10:05",
+            },
+            {
+                "title": "上海浦东发展银行600000 盘中快讯",
+                "snippet": "上海浦东发展银行600000 最新价10.22元/股，更新时间2026-03-10 10:06",
+                "link": "https://www.yicai.com/news/stock",
+                "timestamp": "2026-03-10 10:06",
+            },
+        ]
+        report = parse_search_results_to_report(search_data, "600000")
+        gate = report.get("expert_identity_gate", {})
+        self.assertTrue(gate.get("identity_passed"))
+        self.assertGreaterEqual(gate.get("identity_source_summary", {}).get("category_count", 0), 2)
+        self.assertGreaterEqual(len(gate.get("identity_source_evidences", [])), 2)
+
+    def test_identity_gate_should_fail_when_code_to_name_mapping_conflicts(self):
+        search_data = [
+            {
+                "title": "浦发银行(600000) 行情播报",
+                "snippet": "浦发银行(600000) 最新价10.20元/股，更新时间2026-03-10 10:05",
+                "link": "https://www.sse.com.cn/marketdata",
+                "timestamp": "2026-03-10 10:05",
+            },
+            {
+                "title": "招商银行(600000) 行情播报",
+                "snippet": "招商银行(600000) 最新价10.21元/股，更新时间2026-03-10 10:06",
+                "link": "https://www.yicai.com/news/stock",
+                "timestamp": "2026-03-10 10:06",
+            },
+        ]
+        report = parse_search_results_to_report(search_data, "600000")
+        gate = report.get("expert_identity_gate", {})
+        self.assertFalse(gate.get("identity_passed"))
+        self.assertIn("IDENTITY_CODE_NAME_MISMATCH", gate.get("failed_reason_codes", []))
+
+    def test_identity_gate_should_fail_when_name_maps_to_other_code(self):
+        search_data = [
+            {
+                "title": "浦发银行(600000) 行情播报",
+                "snippet": "浦发银行(600000) 最新价10.20元/股，更新时间2026-03-10 10:05",
+                "link": "https://www.sse.com.cn/marketdata",
+                "timestamp": "2026-03-10 10:05",
+            },
+            {
+                "title": "浦发银行(601000) 公告快讯",
+                "snippet": "浦发银行(601000) 最新价10.18元/股，更新时间2026-03-10 10:06",
+                "link": "https://www.yicai.com/news/stock",
+                "timestamp": "2026-03-10 10:06",
+            },
+        ]
+        report = parse_search_results_to_report(search_data, "600000")
+        gate = report.get("expert_identity_gate", {})
+        self.assertFalse(gate.get("identity_passed"))
+        self.assertIn("IDENTITY_NAME_CODE_CONFLICT", gate.get("failed_reason_codes", []))
+
+    def test_price_semantic_should_fail_when_currency_or_unit_cross_source_conflicts(self):
+        search_data = [
+            {
+                "title": "浦发银行(600000) 行情播报",
+                "snippet": "浦发银行(600000) 最新价10.20元/股，更新时间2026-03-10 10:05",
+                "link": "https://www.sse.com.cn/marketdata",
+                "timestamp": "2026-03-10 10:05",
+            },
+            {
+                "title": "浦发银行(600000) 海外报价",
+                "snippet": "浦发银行(600000) 最新价1.42美元/股，更新时间2026-03-10 10:06",
+                "link": "https://www.yicai.com/news/stock",
+                "timestamp": "2026-03-10 10:06",
+            },
+        ]
+        report = parse_search_results_to_report(search_data, "600000")
+        gate = report.get("expert_identity_gate", {})
+        self.assertFalse(gate.get("price_passed"))
+        self.assertIn("PRICE_CURRENCY_UNIT_INCONSISTENT", gate.get("failed_reason_codes", []))
+
+    def test_expert_identity_gate_should_block_when_agent_or_price_mismatch(self):
+        report = {
+            "stock_code": "600000",
+            "price_info": {"price": "10.00"},
+            "expert_outputs": {
+                "industry_researcher": {"agent": "wrong_agent", "stock_code": "600000", "as_of_price": "11.20"},
+                "event_hunter": {"agent": "expert_event_hunter", "stock_code": "601000", "as_of_price": "9.20"},
+            },
+        }
+        gate = gr._run_expert_identity_gate(report)
+        self.assertFalse(gate.get("passed"))
+        self.assertTrue(gate.get("require_block"))
+        reasons = " ".join(gate.get("failed_reasons", []))
+        self.assertIn("身份不匹配", reasons)
+        self.assertIn("标的不一致", reasons)
+        self.assertIn("价格偏差超阈值", reasons)
+
+    def test_markdown_should_render_expert_identity_and_process_block_section(self):
+        payload = {
+            "date": "2026-03-10",
+            "stocks": [
+                {
+                    "stock_code": "601868",
+                    "stock_name": "中国能建",
+                    "label": "观察",
+                    "scores": {"momentum": 85, "revenue": 75, "risk": 70},
+                    "shortline_signals": {"vwap_deviation": "1.20", "atr_stop": "8.21", "volume_ratio": "2.10"},
+                    "expert_identity_gate": {
+                        "passed": False,
+                        "identity_passed": False,
+                        "price_passed": False,
+                        "require_block": True,
+                        "checked_stock_code": "601868",
+                        "reference_price": "9.88",
+                        "failed_agents": ["industry_researcher"],
+                        "failed_reasons": ["industry_researcher身份不匹配", "industry_researcher价格偏差超阈值(12.0%>8.0%)"],
+                    },
+                    "process_block": {
+                        "blocked": True,
+                        "blocked_stage": "supervisor_review",
+                        "reason": "industry_researcher身份不匹配；industry_researcher价格偏差超阈值(12.0%>8.0%)",
+                        "next_action": "重采样并重新执行专家鉴别",
+                    },
+                }
+            ],
+        }
+        content = gr.format_obsidian_markdown_report(payload)
+        self.assertIn("专家鉴别与身份价格校验", content)
+        self.assertIn("流程阻断", content)
+        self.assertIn("阻断状态：已阻断", content)
+        self.assertIn("专家身份与价格校验未通过", content)
+
+    def test_markdown_should_render_aggregated_authenticity_verification_block(self):
+        payload = {
+            "date": "2026-03-10",
+            "stocks": [
+                {
+                    "stock_code": "600000",
+                    "stock_name": "浦发银行",
+                    "label": "观察",
+                    "scores": {"momentum": 80, "revenue": 76, "risk": 72},
+                    "expert_identity_gate": {
+                        "passed": False,
+                        "identity_passed": False,
+                        "price_passed": False,
+                        "failed_reason_codes": ["IDENTITY_CODE_NAME_MISMATCH", "PRICE_CURRENCY_UNIT_INCONSISTENT"],
+                        "identity_source_summary": {"evidence_count": 3, "category_count": 2},
+                        "price_semantic_summary": {"currency": "CNY", "unit": "元/股", "record_count": 3, "category_count": 2},
+                        "authenticity_summary": {
+                            "identity_status": "未通过",
+                            "price_status": "未通过",
+                            "source_count": 6,
+                            "latest_timestamp": "2026-03-10 10:18",
+                            "risk_tips": ["身份一致性存在风险", "价格语义一致性存在风险"],
+                            "failed_reason_codes": ["IDENTITY_CODE_NAME_MISMATCH", "PRICE_CURRENCY_UNIT_INCONSISTENT"],
+                        },
+                    },
+                }
+            ],
+        }
+        content = gr.format_obsidian_markdown_report(payload)
+        self.assertIn("数据真实性鉴别结果", content)
+        self.assertIn("最近校验时间戳：2026-03-10 10:18", content)
+        self.assertIn("失败原因编码", content)
+        self.assertIn("风险提示", content)
 
     def test_complex_request_end_to_end_should_cover_full_closed_loop_dimensions(self):
         request = "请今日采集市场数据，筛选10支，再组织专家讨论，最后推荐3支"

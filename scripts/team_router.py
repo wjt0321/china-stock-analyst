@@ -81,6 +81,7 @@ def build_skill_chain_plan(use_team: bool) -> dict:
                 "run_technical_expert",
                 "run_quant_flow_expert",
                 "run_risk_expert",
+                "run_expert_identifier_agent",
                 "supervisor_review",
                 "render_report",
             ],
@@ -99,6 +100,7 @@ def build_skill_chain_plan(use_team: bool) -> dict:
             "run_macro_expert",
             "run_industry_researcher_expert",
             "run_event_hunter_expert",
+            "run_expert_identifier_agent",
             "supervisor_review",
             "render_report",
         ],
@@ -126,9 +128,12 @@ def build_shortline_supervisor_rules() -> dict:
             "run_quant_flow_expert": ["volume_ratio", "fund_slope", "reversal_detection"],
             "run_industry_researcher_expert": ["industry_cycle", "supply_chain_signal", "competition_map"],
             "run_event_hunter_expert": ["policy_event_scan", "announcement_impact", "regulatory_signal"],
+            "run_expert_identifier_agent": ["agent_identity_match", "stock_code_match", "price_consistency_check"],
         },
         "supervisor_review_fields": [
             "audit_gate",
+            "expert_identity_gate",
+            "process_block",
             "indicator_signals",
             "indicator_missing",
             "downgrade_reason",
@@ -141,6 +146,7 @@ def build_shortline_supervisor_rules() -> dict:
         "expert_output_schema": {
             "run_industry_researcher_expert": _build_industry_researcher_schema(),
             "run_event_hunter_expert": _build_event_hunter_schema(),
+            "run_expert_identifier_agent": _build_expert_identifier_schema(),
         },
         "conflict_arbitration_rules": [
             "行业景气正向但事件冲击为强负向时，主管将标签上限降为观察",
@@ -169,6 +175,7 @@ def build_shortline_supervisor_rules() -> dict:
             "run_macro_expert",
             "run_industry_researcher_expert",
             "run_event_hunter_expert",
+            "run_expert_identifier_agent",
             "supervisor_review",
             "render_report",
         ],
@@ -206,6 +213,22 @@ def _build_event_hunter_schema() -> dict:
             "evidences",
         ],
         "evidence_schema": ["conclusion", "value", "source_url", "timestamp"],
+    }
+
+
+def _build_expert_identifier_schema() -> dict:
+    return {
+        "agent": "expert_identifier_agent",
+        "required_input_fields": ["stock_code", "price_info", "expert_outputs", "field_sources"],
+        "required_output_fields": [
+            "passed",
+            "identity_passed",
+            "price_passed",
+            "require_block",
+            "failed_agents",
+            "failed_reasons",
+            "next_action",
+        ],
     }
 
 

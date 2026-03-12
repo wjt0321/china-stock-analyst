@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-purple.svg)
-![Tests](https://img.shields.io/badge/Tests-40%20Passed-success.svg)
+![Tests](https://img.shields.io/badge/Tests-42%20Passed-success.svg)
 
 **📈 A股短线交易分析助手 | Team-First 并行专家系统**
 
@@ -27,9 +27,10 @@
 
 | 特性 | 说明 |
 |:---:|:---|
-| 👥 **7位专家协同** | 基本面大师 / 技术分析派 / 量化模型师 / 风险控制官 / 宏观策略师 / 行业研究家 / 消息面猎手 |
+| 👥 **8位专家协同** | 基本面大师 / 技术分析派 / 量化模型师 / 风险控制官 / 宏观策略师 / 行业研究家 / 消息面猎手 / 专家鉴别Agent |
 | 🧭 **Team-First 默认并行** | 默认进入 `agent_team`，复杂任务强制 `full_parallel`，不再以 `single_flow` 作为主流程 |
 | 🛡️ **数据真实性审计前置** | `run_data_auditor` 在所有分析前执行，校验日期回退、时间戳冲突、来源类别充分性 |
+| 🧾 **身份与价格双校验** | `run_expert_identifier_agent` 校验专家身份、标的一致性、价格锚点偏差，异常时流程阻断 |
 | 🧹 **舆情降噪治理** | 舆情去重、质量评分、低质量剔除，且对综合评分影响封顶，避免噪声主导推荐 |
 | ⚖️ **主管冲突仲裁** | 对行业信号与事件冲击冲突进行降档仲裁，输出“可做 / 观察 / 回避”上限与原因 |
 | 🔍 **证据链可追溯** | 每条关键结论附结论值、来源 URL、分钟级时间戳与采纳/剔除依据 |
@@ -58,7 +59,7 @@ git clone https://github.com/wjt0321/china-stock-analyst.git
 python -m unittest tests/test_stock_skill.py -v
 ```
 
-当前测试结果：**40 个用例全部通过** ✅
+当前测试结果：**42 个用例全部通过** ✅
 
 ---
 
@@ -114,6 +115,7 @@ run_data_auditor
 → run_macro_expert
 → run_industry_researcher_expert
 → run_event_hunter_expert
+→ run_expert_identifier_agent
 → supervisor_review
 → render_report
 ```
@@ -151,7 +153,8 @@ run_data_auditor
 | 💰 营收快照 | 营收/同比/环比/口径/来源/日期 |
 | 🎯 双轨评分 | 加权总分与校准后总分 |
 | 🧹 舆情降噪治理 | 采纳数、剔除数、理由与影响分 |
-| 🧠 专家独立结论 | 7位专家观点与证据链 |
+| 🧠 专家独立结论 | 8位专家观点与证据链 |
+| 🧾 专家鉴别与流程阻断 | 身份/标的/价格校验结果、阻断阶段、后续动作 |
 | ⚖️ 主管仲裁 | 冲突项、标签上限、仲裁原因 |
 | 🔗 证据链总表 | 结论→数据→来源→时间戳 |
 
@@ -189,6 +192,7 @@ python -m unittest tests/test_stock_skill.py -v
 测试覆盖包含：
 - 路由与高意图激活
 - 数据审计与重采降级
+- 专家鉴别、身份与价格校验、流程阻断
 - 舆情降噪与评分封顶
 - 新增专家与主管仲裁
 - 复杂请求端到端闭环验证
@@ -202,6 +206,13 @@ python -m unittest tests/test_stock_skill.py -v
 ---
 
 ## 📅 更新日志
+
+### v2.1.0 (2026-03-12)
+
+- 新增 `run_expert_identifier_agent`：专家身份、标的一致性、价格锚点偏差校验
+- 新增流程阻断机制：身份或价格校验失败时阻断 `supervisor_review`
+- 报告新增“专家鉴别与身份价格校验”“流程阻断”区块
+- 测试扩展至 42 项并全部通过
 
 ### v2.0.0 (2026-03-11)
 
@@ -222,4 +233,3 @@ python -m unittest tests/test_stock_skill.py -v
 ## 📌 免责声明
 
 > ⚠️ 所有分析仅供参考，不构成投资建议。股市有风险，投资需谨慎。
-
