@@ -8,6 +8,11 @@ htmlcov/
 *.so
 .Python
 
+# Runtime cache files
+scripts/.team_router_intent_cache.json
+scripts/.team_router_intent_routes.json
+scripts/.eastmoney_daily_counter.json
+
 # Virtual environment
 venv/
 env/
