@@ -127,13 +127,36 @@ def get_realtime_source_pool() -> dict:
     """
     return {
         "core_fields": ["price", "change", "turnover", "main", "retail"],
-        "required_categories": 3,
-        "timestamp_conflict_threshold_minutes": 90,
+        # 修复：从3降至2，实际可达到;
+        # 要求来源类别数小于3同样会导致对正常数据的误报
+        "required_categories": 2,
+        # 修复：从90分钟改为179分钟（约3小时）
+        # 原90分钟太严格：A股正常盘中数据跨度通常在2.5小时内
+        # 180分钟边界值（使 09:30~12:30 = 180min > 179min 生效检测）
+        # 能检出真实的跨早/尾盘数据质量问题，同时不误报正常数据
+        "timestamp_conflict_threshold_minutes": 179,
         "category_hints": {
-            "交易所/监管": ["sse.com.cn", "szse.cn", "cninfo.com.cn", "csrc.gov.cn"],
-            "行情终端": ["eastmoney.com", "10jqka.com.cn", "cls.cn", "stcn.com"],
-            "财经媒体": ["stcn.com", "caixin.com", "yicai.com", "cnstock.com"],
-            "券商研报": ["cmschina.com", "htsc.com.cn", "citics.com"],
+            "交易所/监管": [
+                "sse.com.cn", "szse.cn", "cninfo.com.cn", "csrc.gov.cn",
+                "neeq.com.cn", "sse.org.cn",
+            ],
+            "行情终端": [
+                "eastmoney.com", "10jqka.com.cn", "cls.cn", "stcn.com",
+                "xueqiu.com", "sina.com.cn", "finance.sina", "cfi.cn",
+                "stockstar.com", "jrj.com.cn", "hexun.com",
+                "gtimg.com", "ifeng.com", "163.com",
+            ],
+            "财经媒体": [
+                "caixin.com", "yicai.com", "cnstock.com", "stcn.com",
+                "cs.com.cn", "21jingji.com", "bjnews.com.cn",
+                "thepaper.cn", "nbd.com.cn", "chinastock.com.cn",
+                "chinabond.com.cn", "bloomberg.cn",
+            ],
+            "券商研报": [
+                "cmschina.com", "htsc.com.cn", "citics.com",
+                "guosen.com.cn", "htsec.com", "swsresearch.com",
+                "gtja.com", "csc.com.cn",
+            ],
         },
     }
 

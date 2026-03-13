@@ -142,17 +142,36 @@ def parse_search_results_to_report(search_results: list, stock_code: str, reques
     return report
 
 
+# 优先从明确的价格关键词后提取股价，避免误取止损位/历史价等
+_PRICE_ANCHOR_RE = re.compile(
+    r'(?:最新价|现价|收盘价|当前价格|报价|今日收盘|股价)\s*[：:=]?\s*'
+    r'([0-9]+\.?[0-9]*)\s*元'
+)
+_PRICE_FALLBACK_RE = re.compile(r'([0-9]+\.?[0-9]*)\s*元(?:/股)?')
+# A股合理价格区间（单位：元/股）
+_A_SHARE_PRICE_MIN = 0.1
+_A_SHARE_PRICE_MAX = 600.0
+
+
 def _parse_price(snippet: str) -> dict:
     parsed = {}
-    # 匹配价格
-    price_pattern = r'(\d+\.?\d*)\s*元'
-    price_match = re.search(price_pattern, snippet)
-    if price_match:
-        parsed['price'] = price_match.group(1)
+    # 优先：从语义锚点（最新价/现价等）后取价格
+    m = _PRICE_ANCHOR_RE.search(snippet)
+    if m:
+        parsed['price'] = m.group(1)
+    else:
+        # 降级：遍历所有"X元"，取第一个落在A股合理价格区间的值
+        for m2 in _PRICE_FALLBACK_RE.finditer(snippet):
+            try:
+                val = float(m2.group(1))
+                if _A_SHARE_PRICE_MIN <= val <= _A_SHARE_PRICE_MAX:
+                    parsed['price'] = m2.group(1)
+                    break
+            except ValueError:
+                continue
 
     # 匹配涨跌幅
-    change_pattern = r'([+-]?\d+\.?\d*)\s*%'
-    change_match = re.search(change_pattern, snippet)
+    change_match = re.search(r'([+-]?\d+\.?\d*)\s*%', snippet)
     if change_match:
         parsed['change'] = change_match.group(1)
     turnover_match = re.search(r'成交额[^0-9]*([0-9]+\.?[0-9]*)\s*(亿元|亿|万元|万|元)', snippet)
@@ -173,20 +192,38 @@ def _parse_fund_flow(snippet: str) -> dict:
     return parsed
 
 
+# 资金流向方向关键词（正向=流入，负向=流出）
+_FLOW_INFLOW_WORDS = ["净流入", "净买入", "主动买入", "买超"]
+_FLOW_OUTFLOW_WORDS = ["净流出", "净卖出", "主动卖出", "卖超"]
+# 同义方向词结合体，直接嵌入正则
+_FLOW_DIRECTION_GROUP = r'(' + '|'.join(_FLOW_OUTFLOW_WORDS + _FLOW_INFLOW_WORDS) + r')'
+
+
 def _extract_flow_amount(snippet: str, role: str):
-    pattern = rf'{role}[资金]*[^，。,；;]*?(净流入|净流出)?\s*([+-]?\d+\.?\d*)\s*(亿元|亿|万元|万|元)?'
-    match = re.search(pattern, snippet)
-    if not match:
+    # 优先：在角色关键词后直接捕获方向词+数字（防止跨角色方向污染）
+    pattern_with_dir = (
+        rf'{role}[资金]*[^\uff0c\u3002,\uff1b;]{{0,20}}?'
+        rf'{_FLOW_DIRECTION_GROUP}\s*'
+        rf'([+-]?\d+\.?\d*)\s*(\u4ebf\u5143|\u4ebf|\u4e07\u5143|\u4e07|\u5143)?'
+    )
+    match = re.search(pattern_with_dir, snippet)
+    if match:
+        direction = match.group(1)
+        amount_raw = float(match.group(2))
+        unit = match.group(3) or '\u4e07\u5143'
+        amount = _normalize_to_wan(amount_raw, unit)
+        if direction in _FLOW_OUTFLOW_WORDS:
+            return -abs(amount)
+        return abs(amount)
+
+    # 降级：无方向词时，仅在角色关键词后5字符内找数字，防止跨描述污染
+    pattern_no_dir = rf'{role}[资金]*[^\uff0c\u3002,\uff1b;]{{0,30}}?([+-]?\d+\.?\d*)\s*(\u4ebf\u5143|\u4ebf|\u4e07\u5143|\u4e07|\u5143)?'
+    match2 = re.search(pattern_no_dir, snippet)
+    if not match2:
         return None
-    direction = match.group(1) or ''
-    amount_raw = float(match.group(2))
-    unit = match.group(3) or '万元'
-    amount = _normalize_to_wan(amount_raw, unit)
-    if direction == '净流出':
-        amount = -abs(amount)
-    elif direction == '净流入':
-        amount = abs(amount)
-    return amount
+    amount_raw = float(match2.group(1))
+    unit = match2.group(2) or '\u4e07\u5143'
+    return _normalize_to_wan(amount_raw, unit)
 
 
 def _normalize_to_wan(value: float, unit: str) -> float:
@@ -279,11 +316,21 @@ def _record_field_sources(report: dict, section: str, updates: dict, source: dic
         )
 
 
+# 代码与名称关联的局部窗口大小（字符数），避免跨标的张冠李戴
+_IDENTITY_WINDOW_SIZE = 50
+
+
 def _extract_identity_mentions(text: str, source: dict) -> list:
     mentions = []
     merged_text = text or ""
-    for code in re.findall(r"(?<!\d)([036]\d{5})(?!\d)", merged_text):
-        name_candidates = _extract_stock_name_candidates(merged_text, code)
+    for match in re.finditer(r"(?<!\d)([036]\d{5})(?!\d)", merged_text):
+        code = match.group(1)
+        # 关键修复：只在代码周围±_IDENTITY_WINDOW_SIZE字符的局部窗口内提取名称
+        # 防止多标的文本中代码与名称交叉配对
+        local_start = max(0, match.start() - _IDENTITY_WINDOW_SIZE)
+        local_end = min(len(merged_text), match.end() + _IDENTITY_WINDOW_SIZE)
+        local_window = merged_text[local_start:local_end]
+        name_candidates = _extract_stock_name_candidates(local_window, code)
         for candidate in name_candidates:
             normalized_name = normalize_stock_name(candidate)
             if not normalized_name:
