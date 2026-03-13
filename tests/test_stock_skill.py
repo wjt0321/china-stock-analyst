@@ -262,6 +262,17 @@ class TestStockSkill(unittest.TestCase):
         self.assertNotIn("main", report["fund_flow"])
         self.assertNotIn("retail", report["fund_flow"])
 
+    def test_price_should_prefer_anchor_when_multiple_yuan_values_exist(self):
+        search_data = [
+            {
+                "title": "盘中快讯",
+                "snippet": "止损3.50元，目标价12.80元，最新价4.85元，涨跌幅+0.82%，成交额2.3亿元",
+                "link": "http://example.com",
+            }
+        ]
+        report = parse_search_results_to_report(search_data, "600000")
+        self.assertEqual(report["price_info"].get("price"), "4.85")
+
     def test_shortline_signals_should_extract_vwap_volume_ratio_and_atr_stop(self):
         search_data = [
             {
@@ -320,6 +331,26 @@ class TestStockSkill(unittest.TestCase):
         self.assertFalse(gate.get("identity_passed"))
         self.assertIn("IDENTITY_CODE_NAME_MISMATCH", gate.get("failed_reason_codes", []))
         self.assertTrue(any("浦发银行 vs 招商银行" in reason for reason in gate.get("failed_reasons", [])))
+
+    def test_identity_gate_should_not_cross_bind_name_in_multi_stock_single_snippet(self):
+        search_data = [
+            {
+                "title": "行业对比",
+                "snippet": "平安银行(000001) 与 浦发银行(600000) 同日上涨，浦发银行(600000) 最新价10.20元/股，更新时间2026-03-10 10:05",
+                "link": "https://www.yicai.com/news/stock",
+                "timestamp": "2026-03-10 10:05",
+            },
+            {
+                "title": "交易所播报",
+                "snippet": "浦发银行(600000) 最新价10.22元/股，更新时间2026-03-10 10:06",
+                "link": "https://www.sse.com.cn/marketdata",
+                "timestamp": "2026-03-10 10:06",
+            },
+        ]
+        report = parse_search_results_to_report(search_data, "600000", stock_name="浦发银行")
+        gate = report.get("expert_identity_gate", {})
+        self.assertTrue(gate.get("identity_passed"))
+        self.assertNotIn("IDENTITY_CODE_NAME_MISMATCH", gate.get("failed_reason_codes", []))
 
     def test_data_audit_should_require_resample_when_date_rolls_back(self):
         search_data = self._build_multi_source_core_data(

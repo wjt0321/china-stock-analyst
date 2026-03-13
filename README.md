@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-purple.svg)
-![Tests](https://img.shields.io/badge/Tests-52%20Passed-success.svg)
+![Tests](https://img.shields.io/badge/Tests-54%20Passed-success.svg)
 
 **📈 A股短线交易分析助手 | Team-First 并行专家系统**
 
@@ -59,7 +59,7 @@ git clone https://github.com/wjt0321/china-stock-analyst.git
 python -m unittest tests/test_stock_skill.py -v
 ```
 
-当前测试结果：**52 个用例全部通过** ✅
+当前测试结果：**54 个用例全部通过** ✅
 
 ---
 
@@ -213,7 +213,7 @@ python -m unittest tests/test_stock_skill.py -v
 - 资金方向兜底：无方向词场景改为保守判定，避免把“仅金额描述”误判为流入或流出
 - 审计回归补强：新增“阈值内不冲突”“双类别通过”等回归测试，降低误报同时保证可解释性
 - 文档完善：补充数据提取原则（价格锚点优先、多标的过滤）
-- 测试扩展：测试集扩展至 52 项并全部通过
+- 测试扩展：测试集扩展至 54 项并全部通过
 
 ### v2.1.1 (2026-03-13)
 

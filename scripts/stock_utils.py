@@ -16,6 +16,19 @@ STOCK_NAME_ALIAS_MAP = {
 }
 
 
+def _compact_name_text(text: str) -> str:
+    return re.sub(r"[\s·\-\(\)（）【】\[\]A股港股美股]+", "", (text or "").strip())
+
+
+def _strip_company_suffix(name: str) -> str:
+    normalized = name
+    for suffix in ("股份有限公司", "有限责任公司", "有限公司"):
+        if normalized.endswith(suffix):
+            normalized = normalized[: -len(suffix)]
+            break
+    return normalized
+
+
 def normalize_stock_name(name: str) -> str:
     """
     统一股票名称表达，支持常见噪声清洗与别名归一
@@ -23,23 +36,14 @@ def normalize_stock_name(name: str) -> str:
     raw = (name or "").strip()
     if not raw:
         return ""
-    normalized = re.sub(r"[\s·\-\(\)（）【】\[\]A股港股美股]+", "", raw)
-    normalized = (
-        normalized.replace("有限公司", "")
-        .replace("股份有限公司", "")
-        .replace("股份", "")
-        .replace("集团", "")
-        .replace("控股", "")
-        .replace("有限责任公司", "")
-    )
+    normalized = _compact_name_text(raw)
+    normalized = _strip_company_suffix(normalized)
     normalized = normalized.replace("*ST", "ST").replace("ＳＴ", "ST")
     if normalized.upper().startswith("ST"):
         normalized = normalized[2:]
     for canonical, aliases in STOCK_NAME_ALIAS_MAP.items():
         candidates = [canonical, *aliases]
-        normalized_candidates = {
-            re.sub(r"[\s·\-\(\)（）【】\[\]]+", "", item): canonical for item in candidates
-        }
+        normalized_candidates = {_strip_company_suffix(_compact_name_text(item)) for item in candidates}
         if normalized in normalized_candidates:
             return canonical
     return normalized
