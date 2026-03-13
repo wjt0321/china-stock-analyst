@@ -2,9 +2,17 @@
 # 本脚本作为辅助工具，主要数据获取通过 Web Search 完成
 
 # 股票代码正则验证
+import json
+import logging
+import os
 import re
+import threading
 from datetime import datetime
-from urllib.parse import urlparse
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin, urlparse
+from urllib.request import Request, urlopen
 
 
 STOCK_NAME_ALIAS_MAP = {
@@ -14,6 +22,617 @@ STOCK_NAME_ALIAS_MAP = {
     "首开股份": ["首开", "北京首都开发股份有限公司"],
     "晋控电力": ["山西晋控电力", "晋能控股电力"],
 }
+
+LOGGER = logging.getLogger(__name__)
+EASTMONEY_APIKEY_ENV = "EASTMONEY_APIKEY"
+_SKILL_ROOT = Path(__file__).resolve().parents[1]
+_ENV_FILE_CANDIDATES = (".env.local", ".env")
+DEFAULT_EASTMONEY_BASE_URL = "https://mkapi2.dfcfs.com/finskillshub/api/claw"
+DEFAULT_EASTMONEY_ENDPOINT_NEWS_SEARCH = "/news-search"
+DEFAULT_EASTMONEY_ENDPOINT_QUERY = "/query"
+DEFAULT_EASTMONEY_ENDPOINT_STOCK_SCREEN = "/stock-screen"
+EASTMONEY_BASE_URL = os.getenv("EASTMONEY_BASE_URL", DEFAULT_EASTMONEY_BASE_URL)
+EASTMONEY_ENDPOINT_NEWS_SEARCH = os.getenv("EASTMONEY_ENDPOINT_NEWS_SEARCH", DEFAULT_EASTMONEY_ENDPOINT_NEWS_SEARCH)
+EASTMONEY_ENDPOINT_QUERY = os.getenv("EASTMONEY_ENDPOINT_QUERY", DEFAULT_EASTMONEY_ENDPOINT_QUERY)
+EASTMONEY_ENDPOINT_STOCK_SCREEN = os.getenv("EASTMONEY_ENDPOINT_STOCK_SCREEN", DEFAULT_EASTMONEY_ENDPOINT_STOCK_SCREEN)
+EASTMONEY_DAILY_LIMIT = 50
+_EASTMONEY_COUNTER_FILE = Path(__file__).resolve().parent / ".eastmoney_daily_counter.json"
+_EASTMONEY_COUNTER_LOCK = threading.Lock()
+EASTMONEY_EMPTY_RESULT_TIP = (
+    "东方财富返回空结果：请缩小时间范围、补充股票代码或改用更具体关键词后重试；"
+    "如仍无结果，可前往东方财富妙想AI继续检索。"
+)
+EASTMONEY_BLOCKED_RESULT_TIP = "查询范围过大，已触发保护性拦截。请缩小时间区间、提高筛选条件约束或降低返回条数。"
+EASTMONEY_STOCK_SCREEN_COLUMN_MAP = {
+    "code": "股票代码",
+    "symbol": "股票代码",
+    "stock_code": "股票代码",
+    "secu_code": "股票代码",
+    "security_code": "股票代码",
+    "name": "股票名称",
+    "stock_name": "股票名称",
+    "secu_name": "股票名称",
+    "security_name": "股票名称",
+    "latest_price": "最新价",
+    "price": "最新价",
+    "change_pct": "涨跌幅",
+    "pct_chg": "涨跌幅",
+    "turnover_rate": "换手率",
+    "volume_ratio": "量比",
+    "main_net_inflow": "主力净流入",
+    "pe_ttm": "市盈率TTM",
+    "market_cap": "总市值",
+    "sort_value": "排序值",
+    "score": "排序值",
+}
+
+
+class EastmoneyPostError(RuntimeError):
+    """东财 POST 请求异常基类"""
+
+
+class EastmoneyApiKeyMissingError(EastmoneyPostError):
+    """未读取到 EASTMONEY_APIKEY"""
+
+
+class EastmoneyDailyLimitError(EastmoneyPostError):
+    """超过 50 次/日配额"""
+
+
+class EastmoneyHttpError(EastmoneyPostError):
+    """HTTP 请求异常"""
+
+
+class EastmoneyDecodeError(EastmoneyPostError):
+    """响应解析异常"""
+
+
+def _mask_secret(value: str, keep_start: int = 3, keep_end: int = 2) -> str:
+    raw = str(value or "")
+    if len(raw) <= keep_start + keep_end:
+        return "*" * len(raw)
+    return f"{raw[:keep_start]}{'*' * (len(raw) - keep_start - keep_end)}{raw[-keep_end:]}"
+
+
+def _desensitize_payload(payload: dict) -> dict:
+    sensitive_keys = ("apikey", "api_key", "token", "authorization", "password", "secret", "sign")
+    safe_payload = {}
+    for key, value in (payload or {}).items():
+        key_text = str(key).lower()
+        if any(s in key_text for s in sensitive_keys):
+            safe_payload[key] = _mask_secret(value)
+        else:
+            safe_payload[key] = value
+    return safe_payload
+
+
+def get_eastmoney_apikey(required: bool = True) -> str:
+    apikey = (os.getenv(EASTMONEY_APIKEY_ENV) or os.getenv("EASTMONEY_API_KEY") or os.getenv("EM_API_KEY") or "").strip()
+    if not apikey:
+        apikey = _load_eastmoney_apikey_from_env_files()
+    if required and not apikey:
+        raise EastmoneyApiKeyMissingError(
+            f"环境变量 {EASTMONEY_APIKEY_ENV} 未配置，无法执行东财 POST 请求"
+        )
+    return apikey
+
+
+def _load_eastmoney_apikey_from_env_files() -> str:
+    for file_name in _ENV_FILE_CANDIDATES:
+        key = _extract_key_from_env_file(_SKILL_ROOT / file_name, EASTMONEY_APIKEY_ENV)
+        if key:
+            return key
+    return ""
+
+
+def _extract_key_from_env_file(file_path: Path, key_name: str) -> str:
+    if not file_path.exists():
+        return ""
+    try:
+        lines = file_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    for raw_line in lines:
+        line = (raw_line or "").strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.lower().startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+        left, right = line.split("=", 1)
+        current_key = left.strip()
+        if current_key != key_name:
+            continue
+        value = right.strip()
+        if value.startswith(("'", '"')) and value.endswith(("'", '"')) and len(value) >= 2:
+            value = value[1:-1]
+        return value.strip()
+    return ""
+
+
+def _load_daily_counter() -> dict:
+    if not _EASTMONEY_COUNTER_FILE.exists():
+        return {"date": datetime.now().strftime("%Y-%m-%d"), "count": 0}
+    try:
+        with _EASTMONEY_COUNTER_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {"date": datetime.now().strftime("%Y-%m-%d"), "count": 0}
+    return {
+        "date": str(data.get("date") or datetime.now().strftime("%Y-%m-%d")),
+        "count": int(data.get("count") or 0),
+    }
+
+
+def _save_daily_counter(counter: dict) -> None:
+    _EASTMONEY_COUNTER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with _EASTMONEY_COUNTER_FILE.open("w", encoding="utf-8") as f:
+        json.dump(counter, f, ensure_ascii=False)
+
+
+def consume_eastmoney_daily_quota() -> dict:
+    """
+    消费一次东财接口日配额（50次/日）
+    """
+    with _EASTMONEY_COUNTER_LOCK:
+        today = datetime.now().strftime("%Y-%m-%d")
+        counter = _load_daily_counter()
+        if counter["date"] != today:
+            counter = {"date": today, "count": 0}
+        if counter["count"] >= EASTMONEY_DAILY_LIMIT:
+            raise EastmoneyDailyLimitError(
+                f"东财接口日调用已达上限 {EASTMONEY_DAILY_LIMIT} 次，今日不再继续请求"
+            )
+        counter["count"] += 1
+        _save_daily_counter(counter)
+    return {
+        "date": counter["date"],
+        "count": counter["count"],
+        "remaining": max(EASTMONEY_DAILY_LIMIT - counter["count"], 0),
+    }
+
+
+def get_eastmoney_daily_usage() -> dict:
+    """
+    查看今日已用/剩余配额（不会消耗配额）
+    """
+    with _EASTMONEY_COUNTER_LOCK:
+        today = datetime.now().strftime("%Y-%m-%d")
+        counter = _load_daily_counter()
+        if counter["date"] != today:
+            counter = {"date": today, "count": 0}
+        return {
+            "date": counter["date"],
+            "count": counter["count"],
+            "remaining": max(EASTMONEY_DAILY_LIMIT - counter["count"], 0),
+            "limit": EASTMONEY_DAILY_LIMIT,
+        }
+
+
+def post_json(url: str, payload: dict, headers: dict = None, timeout: int = 10) -> dict:
+    """
+    POST 封装1：通用 JSON POST
+    """
+    merged_headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "Accept": "application/json",
+    }
+    if headers:
+        merged_headers.update(headers)
+    request_data = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
+    req = Request(url=url, data=request_data, headers=merged_headers, method="POST")
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            status = getattr(resp, "status", 200)
+            body = resp.read().decode("utf-8", errors="replace")
+    except HTTPError as e:
+        body = (e.read() or b"").decode("utf-8", errors="replace")
+        raise EastmoneyHttpError(
+            f"POST失败 status={e.code} url={url} body={_mask_secret(body, 0, 0)[:180]}"
+        ) from e
+    except (URLError, TimeoutError, OSError) as e:
+        raise EastmoneyHttpError(f"POST失败 url={url} reason={str(e)}") from e
+
+    if status >= 400:
+        raise EastmoneyHttpError(
+            f"POST失败 status={status} url={url} body={_mask_secret(body, 0, 0)[:180]}"
+        )
+    if not body.strip():
+        return {}
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError as e:
+        raise EastmoneyDecodeError(
+            f"POST响应不是合法JSON url={url} body_preview={body[:180]}"
+        ) from e
+    return parsed if isinstance(parsed, dict) else {"data": parsed}
+
+
+def post_json_with_retry(
+    url: str,
+    payload: dict,
+    headers: dict = None,
+    timeout: int = 10,
+    retries: int = 2,
+) -> dict:
+    """
+    POST 封装2：带重试的 JSON POST（失败抛出最后一次异常）
+    """
+    last_error = None
+    for attempt in range(1, retries + 2):
+        try:
+            return post_json(url=url, payload=payload, headers=headers, timeout=timeout)
+        except EastmoneyPostError as e:
+            last_error = e
+            LOGGER.warning(
+                "POST重试 %s/%s url=%s payload=%s err=%s",
+                attempt,
+                retries + 1,
+                url,
+                _desensitize_payload(payload),
+                str(e),
+            )
+    raise last_error
+
+
+def post_eastmoney(
+    endpoint: str,
+    payload: dict,
+    timeout: int = 10,
+    retries: int = 1,
+    use_daily_limit: bool = True,
+) -> dict:
+    """
+    POST 封装3：东财专用封装（EASTMONEY_APIKEY + 50次/日 + 脱敏日志 + 异常处理）
+    """
+    apikey = get_eastmoney_apikey(required=True)
+    target_url = _build_eastmoney_url(endpoint)
+
+    quota = None
+    if use_daily_limit:
+        quota = consume_eastmoney_daily_quota()
+    LOGGER.info(
+        "调用东财POST url=%s apikey=%s quota=%s payload=%s",
+        target_url,
+        _mask_secret(apikey),
+        quota or "skip",
+        _desensitize_payload(payload),
+    )
+    headers = {
+        "apikey": apikey,
+        "X-Api-Key": apikey,
+    }
+    return post_json_with_retry(
+        url=target_url,
+        payload=payload,
+        headers=headers,
+        timeout=timeout,
+        retries=retries,
+    )
+
+
+def _build_eastmoney_url(endpoint: str) -> str:
+    target = (endpoint or "").strip()
+    if not target:
+        return EASTMONEY_BASE_URL.rstrip("/")
+    if target.startswith(("http://", "https://")):
+        return target
+    base = EASTMONEY_BASE_URL.rstrip("/") + "/"
+    return urljoin(base, target.lstrip("/"))
+
+
+def _dig_path(payload: Any, paths: list, default: Any = None) -> Any:
+    for path in paths:
+        current = payload
+        ok = True
+        for key in path:
+            if isinstance(current, dict) and key in current:
+                current = current.get(key)
+            else:
+                ok = False
+                break
+        if ok:
+            return current
+    return default
+
+
+def _as_list(value: Any) -> list:
+    if isinstance(value, list):
+        return value
+    if value is None:
+        return []
+    return [value]
+
+
+def _as_dict(value: Any) -> dict:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _pick_first(data: dict, keys: list, default: Any = None) -> Any:
+    if not isinstance(data, dict):
+        return default
+    for key in keys:
+        if key in data and data.get(key) not in (None, ""):
+            return data.get(key)
+    return default
+
+
+def _extract_common_meta(resp: dict) -> dict:
+    code = _pick_first(resp, ["code", "errCode", "status", "errno"], "")
+    message = _pick_first(resp, ["msg", "message", "errMsg", "error"], "")
+    success = str(code) in ("", "0", "200", "10000") and "失败" not in str(message)
+    return {"code": code, "message": str(message), "success": bool(success)}
+
+
+def _detect_large_range_blocked(resp: dict) -> bool:
+    raw = json.dumps(resp or {}, ensure_ascii=False)
+    flags = ["范围过大", "too large", "exceed", "超限", "保护", "limit"]
+    return any(flag.lower() in raw.lower() for flag in flags)
+
+
+def _extract_source_timestamp(raw: dict, fallback_text: str = "") -> str:
+    timestamp = (
+        _pick_first(raw, ["publishTime", "pubTime", "time", "datetime", "date"], "")
+        or extract_timestamp_text(fallback_text)
+    )
+    return normalize_timestamp_text(str(timestamp))
+
+
+def _normalize_security_item(item: Any) -> dict:
+    if isinstance(item, str):
+        return {"code": item, "name": "", "market": ""}
+    data = _as_dict(item)
+    return {
+        "code": str(_pick_first(data, ["code", "secuCode", "symbol", "securityCode"], "") or ""),
+        "name": str(_pick_first(data, ["name", "secuName", "securityName"], "") or ""),
+        "market": str(_pick_first(data, ["market", "marketCode", "mkt"], "") or ""),
+    }
+
+
+def eastmoney_news_search(
+    question: str,
+    stock_code: str = "",
+    stock_name: str = "",
+    time_range: str = "",
+    page: int = 1,
+    page_size: int = 10,
+    timeout: int = 10,
+    retries: int = 1,
+) -> dict:
+    payload = {
+        "question": question,
+        "query": question,
+        "keyword": question,
+        "stock_code": stock_code,
+        "stock_name": stock_name,
+        "time_range": time_range,
+        "page": max(int(page or 1), 1),
+        "page_size": max(min(int(page_size or 10), 50), 1),
+    }
+    resp = post_eastmoney(
+        endpoint=EASTMONEY_ENDPOINT_NEWS_SEARCH,
+        payload=payload,
+        timeout=timeout,
+        retries=retries,
+    )
+    return parse_eastmoney_news_search_response(resp, request_payload=payload)
+
+
+def parse_eastmoney_news_search_response(resp: dict, request_payload: dict = None) -> dict:
+    data = resp or {}
+    meta = _extract_common_meta(data)
+    rows = _as_list(
+        _dig_path(
+            data,
+            [
+                ["data", "list"],
+                ["result", "list"],
+                ["result", "result", "list"],
+                ["data", "result", "list"],
+                ["list"],
+            ],
+            default=[],
+        )
+    )
+    items = []
+    for row in rows:
+        current = _as_dict(row)
+        secu_list = _as_list(current.get("secuList") or current.get("securityList") or [])
+        title = str(_pick_first(current, ["title", "name"], "") or "")
+        trunk = str(_pick_first(current, ["trunk", "summary", "content", "abstract", "snippet"], "") or "")
+        source = str(_pick_first(current, ["source", "src", "media"], "") or "")
+        link = str(_pick_first(current, ["url", "link", "weburl"], "") or "")
+        source_timestamp = _extract_source_timestamp(current, fallback_text=f"{title} {trunk}")
+        items.append(
+            {
+                "title": title,
+                "trunk": trunk,
+                "source": source,
+                "publish_time": source_timestamp,
+                "link": link,
+                "secuList": [_normalize_security_item(item) for item in secu_list],
+                "raw": current,
+            }
+        )
+    empty_result = len(items) == 0
+    return {
+        "endpoint": "news-search",
+        "meta": meta,
+        "request_payload": _desensitize_payload(request_payload or {}),
+        "total": len(items),
+        "items": items,
+        "empty_result": empty_result,
+        "empty_result_tip": EASTMONEY_EMPTY_RESULT_TIP if empty_result else "",
+    }
+
+
+def eastmoney_query(
+    question: str,
+    stock_code: str = "",
+    stock_name: str = "",
+    fields: list = None,
+    granularity: str = "day",
+    time_range: str = "",
+    timeout: int = 10,
+    retries: int = 1,
+) -> dict:
+    fields = fields or []
+    payload = {
+        "question": question,
+        "query": question,
+        "stock_code": stock_code,
+        "stock_name": stock_name,
+        "fields": fields,
+        "granularity": granularity,
+        "time_range": time_range,
+    }
+    resp = post_eastmoney(
+        endpoint=EASTMONEY_ENDPOINT_QUERY,
+        payload=payload,
+        timeout=timeout,
+        retries=retries,
+    )
+    return parse_eastmoney_query_response(resp, request_payload=payload)
+
+
+def parse_eastmoney_query_response(resp: dict, request_payload: dict = None) -> dict:
+    data = resp or {}
+    meta = _extract_common_meta(data)
+    data_root = _dig_path(data, [["data"], ["result", "data"], ["result", "result", "data"]], default={})
+    records = _as_list(
+        _dig_path(
+            data,
+            [
+                ["data", "list"],
+                ["result", "list"],
+                ["result", "result", "list"],
+                ["list"],
+            ],
+            default=[],
+        )
+    )
+    requested_fields = _as_list((request_payload or {}).get("fields"))
+    base_sample = _as_dict(records[0]) if records and isinstance(records[0], dict) else _as_dict(data_root)
+    key_fields = {field: base_sample.get(field) for field in requested_fields if field in base_sample}
+    missing_fields = [field for field in requested_fields if field not in base_sample]
+    blocked_by_guardrail = _detect_large_range_blocked(data)
+    source_timestamp = _extract_source_timestamp(base_sample, fallback_text=json.dumps(base_sample, ensure_ascii=False))
+    return {
+        "endpoint": "query",
+        "meta": meta,
+        "request_payload": _desensitize_payload(request_payload or {}),
+        "data": data_root if data_root else {"list": records} if records else {},
+        "records": records,
+        "key_fields": key_fields,
+        "missing_fields": missing_fields,
+        "source_timestamp": source_timestamp,
+        "blocked_by_guardrail": blocked_by_guardrail,
+        "guardrail_tip": EASTMONEY_BLOCKED_RESULT_TIP if blocked_by_guardrail else "",
+        "empty_result": not bool(data_root or records),
+    }
+
+
+def eastmoney_stock_screen(
+    conditions: dict,
+    sort_by: str = "",
+    sort_order: str = "desc",
+    limit: int = 50,
+    timeout: int = 10,
+    retries: int = 1,
+) -> dict:
+    payload = {
+        "conditions": _as_dict(conditions),
+        "sort_by": sort_by,
+        "sort_order": sort_order,
+        "limit": max(min(int(limit or 50), 50), 1),
+    }
+    resp = post_eastmoney(
+        endpoint=EASTMONEY_ENDPOINT_STOCK_SCREEN,
+        payload=payload,
+        timeout=timeout,
+        retries=retries,
+    )
+    return parse_eastmoney_stock_screen_response(resp, request_payload=payload)
+
+
+def parse_eastmoney_stock_screen_response(resp: dict, request_payload: dict = None) -> dict:
+    data = resp or {}
+    meta = _extract_common_meta(data)
+    columns = _as_list(
+        _dig_path(
+            data,
+            [["data", "columns"], ["result", "columns"], ["result", "result", "columns"], ["columns"]],
+            default=[],
+        )
+    )
+    rows = _as_list(
+        _dig_path(
+            data,
+            [["data", "rows"], ["data", "list"], ["result", "rows"], ["result", "list"], ["list"]],
+            default=[],
+        )
+    )
+    normalized_columns = []
+    column_keys = []
+    for item in columns:
+        if isinstance(item, str):
+            field = item
+            label = EASTMONEY_STOCK_SCREEN_COLUMN_MAP.get(field.lower(), field)
+        else:
+            column_def = _as_dict(item)
+            field = str(_pick_first(column_def, ["field", "key", "name", "code"], "") or "")
+            default_label = EASTMONEY_STOCK_SCREEN_COLUMN_MAP.get(field.lower(), field)
+            label = str(_pick_first(column_def, ["label", "title", "displayName"], default_label) or default_label)
+        if field:
+            column_keys.append(field)
+            normalized_columns.append({"field": field, "label": label})
+
+    normalized_rows = []
+    for row in rows:
+        if isinstance(row, dict):
+            row_dict = dict(row)
+        elif isinstance(row, list) and column_keys:
+            row_dict = {column_keys[idx]: row[idx] for idx in range(min(len(column_keys), len(row)))}
+        else:
+            row_dict = {"value": row}
+        stock_code = str(_pick_first(row_dict, ["stock_code", "code", "secu_code", "symbol", "security_code"], "") or "")
+        stock_name = str(_pick_first(row_dict, ["stock_name", "name", "secu_name", "security_name"], "") or "")
+        sort_value = _pick_first(row_dict, ["sort_value", "score", "rank_value"], "")
+        matched_conditions = _as_list(_pick_first(row_dict, ["matched_conditions", "hit_conditions", "rules"], []))
+        normalized_rows.append(
+            {
+                "stock_code": stock_code,
+                "stock_name": stock_name,
+                "matched_conditions": matched_conditions,
+                "sort_value": sort_value,
+                "raw": row_dict,
+            }
+        )
+
+    empty_result = len(normalized_rows) == 0
+    total = _pick_first(
+        _as_dict(_dig_path(data, [["data"], ["result"], ["result", "result"]], default={})),
+        ["total", "count", "total_count"],
+        len(normalized_rows),
+    )
+    return {
+        "endpoint": "stock-screen",
+        "meta": meta,
+        "request_payload": _desensitize_payload(request_payload or {}),
+        "columns": normalized_columns,
+        "rows": normalized_rows,
+        "total": int(total or 0),
+        "empty_result": empty_result,
+        "empty_result_tip": EASTMONEY_EMPTY_RESULT_TIP if empty_result else "",
+        "export": {
+            "columns": normalized_columns,
+            "rows": [row["raw"] for row in normalized_rows],
+            "total": int(total or 0),
+        },
+    }
 
 
 def _compact_name_text(text: str) -> str:

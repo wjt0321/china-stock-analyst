@@ -1,14 +1,18 @@
 import re
 import sys
+import tempfile
 import unittest
+import importlib
 from datetime import datetime
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import generate_report as gr  # noqa: E402
+import stock_utils as su  # noqa: E402
 import team_router as tr  # noqa: E402
 from generate_report import parse_search_results_to_report, _generate_advice  # noqa: E402
 from stock_utils import get_search_queries, get_shortline_indicator_recommendations  # noqa: E402
@@ -16,6 +20,13 @@ from team_router import should_use_agent_team, build_skill_chain_plan  # noqa: E
 
 
 class TestStockSkill(unittest.TestCase):
+    def _clear_team_router_runtime_state(self):
+        for path in [getattr(tr, "_INTENT_CACHE_FILE", None), getattr(tr, "_INTENT_ROUTE_LOG_FILE", None)]:
+            if path and path.exists():
+                path.unlink()
+        if hasattr(tr, "_INTENT_RUNTIME_FALLBACK"):
+            tr._INTENT_RUNTIME_FALLBACK.clear()
+
     def _build_multi_source_core_data(self, timestamps):
         links = [
             "https://www.sse.com.cn/marketdata",
@@ -63,6 +74,45 @@ class TestStockSkill(unittest.TestCase):
         decision = should_use_agent_team("分析 600519")
         self.assertTrue(decision["use_team"])
         self.assertEqual(decision["execution_profile"], "lite_parallel")
+        self.assertIn("eastmoney_router", decision)
+
+    def test_eastmoney_router_should_classify_news_intent(self):
+        self._clear_team_router_runtime_state()
+        routed = tr.route_eastmoney_intent("请查600000最新公告与新闻舆情")
+        self.assertEqual(routed.get("intent_category"), "news-search")
+        self.assertTrue(routed.get("critical_gate", {}).get("passed"))
+        self.assertTrue(routed.get("local_saved"))
+
+    def test_eastmoney_router_should_block_query_without_target(self):
+        self._clear_team_router_runtime_state()
+        routed = tr.route_eastmoney_intent("帮我查行情和成交额")
+        self.assertEqual(routed.get("intent_category"), "query")
+        gate = routed.get("critical_gate", {})
+        self.assertFalse(gate.get("passed"))
+        self.assertTrue(gate.get("blocked_by_guardrail"))
+        reasons = " ".join(gate.get("reasons", []))
+        self.assertIn("缺少标的约束", reasons)
+
+    def test_eastmoney_router_should_block_when_limit_exceeds_threshold(self):
+        self._clear_team_router_runtime_state()
+        routed = tr.route_eastmoney_intent("请策略筛选120支低价股并按量价齐升排序")
+        self.assertEqual(routed.get("intent_category"), "stock-screen")
+        gate = routed.get("critical_gate", {})
+        self.assertFalse(gate.get("passed"))
+        self.assertTrue(gate.get("blocked_by_guardrail"))
+        self.assertIn("返回数量超限", " ".join(gate.get("reasons", [])))
+
+    def test_eastmoney_router_cache_should_trigger_duplicate_threshold(self):
+        self._clear_team_router_runtime_state()
+        request = "请查询600000行情成交额"
+        results = [tr.route_eastmoney_intent(request) for _ in range(4)]
+        latest = results[-1]
+        cache = latest.get("cache", {})
+        gate = latest.get("critical_gate", {})
+        self.assertTrue(cache.get("cache_hit"))
+        self.assertTrue(cache.get("duplicate_threshold_triggered"))
+        self.assertFalse(gate.get("passed"))
+        self.assertTrue(gate.get("blocked_by_guardrail"))
 
     def test_should_auto_activate_full_parallel_for_today_collect_screen_discuss_recommend_request(self):
         request = "请今日采集市场数据，筛选10支，再组织专家讨论，最后推荐3支"
@@ -928,6 +978,184 @@ class TestStockSkill(unittest.TestCase):
         self.assertEqual(financial.get("yoy"), "12.50")
         self.assertEqual(financial.get("qoq"), "3.20")
         self.assertTrue(re.match(r"\d{4}-\d{2}-\d{2}", financial.get("as_of", "")))
+
+    def test_post_json_should_merge_default_and_custom_headers(self):
+        captured = {}
+
+        class _FakeResponse:
+            status = 200
+
+            def read(self):
+                return b'{"ok": true}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        def _fake_urlopen(request, timeout=10):
+            captured["headers"] = dict(request.header_items())
+            captured["timeout"] = timeout
+            captured["body"] = request.data.decode("utf-8")
+            return _FakeResponse()
+
+        with mock.patch.object(su, "urlopen", side_effect=_fake_urlopen):
+            result = su.post_json(
+                url="https://example.com/post",
+                payload={"name": "demo"},
+                headers={"X-Test-Header": "yes"},
+                timeout=12,
+            )
+
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(captured.get("timeout"), 12)
+        headers = captured.get("headers", {})
+        self.assertEqual(headers.get("Content-type"), "application/json; charset=utf-8")
+        self.assertEqual(headers.get("Accept"), "application/json")
+        self.assertEqual(headers.get("X-test-header"), "yes")
+        self.assertIn('"name": "demo"', captured.get("body", ""))
+
+    def test_post_eastmoney_should_inject_apikey_into_headers(self):
+        with mock.patch.object(su, "get_eastmoney_apikey", return_value="abc123XYZ"), \
+            mock.patch.object(su, "post_json_with_retry", return_value={"ok": 1}) as mocked_post:
+            result = su.post_eastmoney(
+                endpoint="query",
+                payload={"question": "测试"},
+                timeout=6,
+                retries=3,
+                use_daily_limit=False,
+            )
+
+        self.assertEqual(result, {"ok": 1})
+        called_kwargs = mocked_post.call_args.kwargs
+        self.assertEqual(called_kwargs["url"], su._build_eastmoney_url("query"))
+        self.assertEqual(called_kwargs["headers"]["apikey"], "abc123XYZ")
+        self.assertEqual(called_kwargs["headers"]["X-Api-Key"], "abc123XYZ")
+        self.assertEqual(called_kwargs["timeout"], 6)
+        self.assertEqual(called_kwargs["retries"], 3)
+
+    def test_eastmoney_defaults_should_use_finskillshub_claw_path(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            importlib.reload(su)
+            self.assertEqual(su.EASTMONEY_BASE_URL, su.DEFAULT_EASTMONEY_BASE_URL)
+            self.assertEqual(su.EASTMONEY_ENDPOINT_NEWS_SEARCH, su.DEFAULT_EASTMONEY_ENDPOINT_NEWS_SEARCH)
+            self.assertEqual(su.EASTMONEY_ENDPOINT_QUERY, su.DEFAULT_EASTMONEY_ENDPOINT_QUERY)
+            self.assertEqual(su.EASTMONEY_ENDPOINT_STOCK_SCREEN, su.DEFAULT_EASTMONEY_ENDPOINT_STOCK_SCREEN)
+            self.assertIn("/finskillshub/api/claw", su.EASTMONEY_BASE_URL)
+            self.assertEqual(
+                su._build_eastmoney_url(su.EASTMONEY_ENDPOINT_NEWS_SEARCH),
+                "https://mkapi2.dfcfs.com/finskillshub/api/claw/news-search",
+            )
+            self.assertEqual(
+                su._build_eastmoney_url(su.EASTMONEY_ENDPOINT_QUERY),
+                "https://mkapi2.dfcfs.com/finskillshub/api/claw/query",
+            )
+            self.assertEqual(
+                su._build_eastmoney_url(su.EASTMONEY_ENDPOINT_STOCK_SCREEN),
+                "https://mkapi2.dfcfs.com/finskillshub/api/claw/stock-screen",
+            )
+
+    def test_eastmoney_env_should_override_defaults(self):
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "EASTMONEY_BASE_URL": "https://custom.example.com/mkapi2",
+                "EASTMONEY_ENDPOINT_NEWS_SEARCH": "/custom-news",
+                "EASTMONEY_ENDPOINT_QUERY": "/custom-query",
+                "EASTMONEY_ENDPOINT_STOCK_SCREEN": "/custom-screen",
+            },
+            clear=True,
+        ):
+            importlib.reload(su)
+            self.assertEqual(su.EASTMONEY_BASE_URL, "https://custom.example.com/mkapi2")
+            self.assertEqual(su.EASTMONEY_ENDPOINT_NEWS_SEARCH, "/custom-news")
+            self.assertEqual(su.EASTMONEY_ENDPOINT_QUERY, "/custom-query")
+            self.assertEqual(su.EASTMONEY_ENDPOINT_STOCK_SCREEN, "/custom-screen")
+            self.assertEqual(su._build_eastmoney_url(su.EASTMONEY_ENDPOINT_NEWS_SEARCH), "https://custom.example.com/mkapi2/custom-news")
+
+    def test_get_apikey_should_fallback_to_env_local_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / ".env.local").write_text("EASTMONEY_APIKEY=from_file_key\n", encoding="utf-8")
+            with mock.patch.dict("os.environ", {}, clear=True), mock.patch.object(su, "_SKILL_ROOT", root):
+                self.assertEqual(su.get_eastmoney_apikey(required=True), "from_file_key")
+
+    def test_get_apikey_should_prioritize_system_env_over_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / ".env.local").write_text("EASTMONEY_APIKEY=from_file_key\n", encoding="utf-8")
+            with mock.patch.dict("os.environ", {"EASTMONEY_APIKEY": "from_env_key"}, clear=True), mock.patch.object(
+                su, "_SKILL_ROOT", root
+            ):
+                self.assertEqual(su.get_eastmoney_apikey(required=True), "from_env_key")
+
+    def test_parse_news_search_should_mark_empty_result_and_tip(self):
+        parsed = su.parse_eastmoney_news_search_response({"code": "0", "data": {"list": []}})
+        self.assertTrue(parsed.get("empty_result"))
+        self.assertEqual(parsed.get("total"), 0)
+        self.assertEqual(parsed.get("empty_result_tip"), su.EASTMONEY_EMPTY_RESULT_TIP)
+        self.assertIn("前往东方财富妙想AI", parsed.get("empty_result_tip", ""))
+
+    def test_daily_quota_should_persist_count_and_block_when_exceeded(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_counter = Path(tmpdir) / ".eastmoney_daily_counter.json"
+            with mock.patch.object(su, "_EASTMONEY_COUNTER_FILE", tmp_counter), \
+                mock.patch.object(su, "EASTMONEY_DAILY_LIMIT", 2):
+                usage1 = su.consume_eastmoney_daily_quota()
+                usage2 = su.consume_eastmoney_daily_quota()
+
+                self.assertEqual(usage1["count"], 1)
+                self.assertEqual(usage2["count"], 2)
+                self.assertEqual(usage2["remaining"], 0)
+
+                with self.assertRaises(su.EastmoneyDailyLimitError):
+                    su.consume_eastmoney_daily_quota()
+
+                daily = su.get_eastmoney_daily_usage()
+                self.assertEqual(daily["count"], 2)
+                self.assertEqual(daily["remaining"], 0)
+                self.assertEqual(daily["limit"], 2)
+
+    def test_desensitize_payload_should_mask_sensitive_fields(self):
+        payload = {
+            "apikey": "abcdef123456",
+            "token": "tok_998877",
+            "password": "p@ss123456",
+            "question": "600000 最新行情",
+        }
+        safe = su._desensitize_payload(payload)
+        self.assertNotEqual(safe["apikey"], payload["apikey"])
+        self.assertNotEqual(safe["token"], payload["token"])
+        self.assertNotEqual(safe["password"], payload["password"])
+        self.assertEqual(safe["question"], payload["question"])
+        self.assertNotIn("abcdef123456", str(safe))
+
+    def test_post_eastmoney_log_should_not_contain_plaintext_apikey_or_token(self):
+        with mock.patch.object(su, "get_eastmoney_apikey", return_value="SENSITIVE_API_KEY_12345"), \
+            mock.patch.object(su, "post_json_with_retry", return_value={"ok": 1}), \
+            mock.patch.object(su.LOGGER, "info") as mocked_log:
+            su.post_eastmoney(
+                endpoint="news-search",
+                payload={"question": "600000", "token": "SECRET_TOKEN_67890"},
+                use_daily_limit=False,
+            )
+
+        args, kwargs = mocked_log.call_args
+        rendered = " ".join(str(item) for item in list(args) + [str(kwargs)])
+        self.assertNotIn("SENSITIVE_API_KEY_12345", rendered)
+        self.assertNotIn("SECRET_TOKEN_67890", rendered)
+        self.assertIn("SEN", rendered)
+        self.assertIn("***", rendered)
+
+    def test_parse_query_should_desensitize_request_payload_apikey(self):
+        parsed = su.parse_eastmoney_query_response(
+            {"code": "0", "data": {"list": [{"price": "10.2"}]}},
+            request_payload={"question": "测试", "apikey": "REAL_API_KEY_001"},
+        )
+        request_payload = parsed.get("request_payload", {})
+        self.assertIn("apikey", request_payload)
+        self.assertNotEqual(request_payload["apikey"], "REAL_API_KEY_001")
 
 
 if __name__ == "__main__":

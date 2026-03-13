@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-purple.svg)
-![Tests](https://img.shields.io/badge/Tests-56%20Passed-success.svg)
+![Tests](https://img.shields.io/badge/Tests-71%20Passed-success.svg)
 
 **📈 A股短线交易分析助手 | Team-First 并行专家系统**
 
@@ -19,7 +19,7 @@
 
 > 一个专为 **Claude Code** 设计的 A 股分析技能，采用「**短线交易信号 + 营收质量**」双轨研判体系。
 
-当前版本已升级为 **Team-First** 架构：默认并行专家协作、前置数据真实性审计、强化复杂指令自动激活与不中断执行。
+当前版本已升级为 **Team-First** 架构：默认并行专家协作、前置数据真实性审计、强化复杂指令自动激活与不中断执行，并新增东方财富免费 API 数据接入能力。
 
 ---
 
@@ -35,6 +35,9 @@
 | ⚖️ **主管冲突仲裁** | 对行业信号与事件冲击冲突进行降档仲裁，输出“可做 / 观察 / 回避”上限与原因 |
 | 🔍 **证据链可追溯** | 每条关键结论附结论值、来源 URL、分钟级时间戳与采纳/剔除依据 |
 | 🔁 **复杂指令连续性守护** | 并行节点支持隔离重试与汇总，不因局部问题回退为单线流程 |
+| 🛰️ **东方财富免费 API 接入** | 新增 `news-search / query / stock-screen` 三类外部能力，补强资讯、结构化金融数据与选股结果可信度 |
+| 🔐 **安全密钥加载** | 支持 `EASTMONEY_APIKEY` 环境变量优先，回退读取项目内 `.env.local/.env`，并默认忽略提交 |
+| 💸 **免费额度治理** | 内置 50 次/日配额控制、关键性门控、缓存去重与空结果引导，优先把额度用在关键数据查询 |
 
 ---
 
@@ -60,6 +63,22 @@ python -m unittest tests/test_stock_skill.py -v
 ```
 
 当前测试结果：**54 个用例全部通过** ✅
+
+### 东方财富 API 配置（必做）
+
+1. 到东方财富 Skills 页面申请你自己的 API Key（请勿使用他人密钥）。
+2. 在项目根目录创建 `.env.local`（推荐）或 `.env`：
+
+```env
+EASTMONEY_APIKEY=请填入你自己的apikey
+EASTMONEY_BASE_URL=https://mkapi2.dfcfs.com/finskillshub/api/claw
+EASTMONEY_ENDPOINT_NEWS_SEARCH=/news-search
+EASTMONEY_ENDPOINT_QUERY=/query
+EASTMONEY_ENDPOINT_STOCK_SCREEN=/stock-screen
+```
+
+3. 也可直接使用系统环境变量 `EASTMONEY_APIKEY`，其优先级高于 `.env.local/.env`。
+4. 仓库已提供 `.env.example` 模板，且 `.gitignore` 默认忽略 `.env` 与 `.env.local`，避免密钥泄露。
 
 ---
 
@@ -216,6 +235,24 @@ python -m unittest tests/test_stock_skill.py -v
 ---
 
 ## 📅 更新日志
+
+### v2.3.0 (2026-03-13)
+
+- 发布 Release/Tag：`2.3.0`
+- 新增东方财富免费 API 三类能力接入：
+  - `news-search`：金融资讯检索（新闻、公告、研报、事件解读）
+  - `query`：结构化金融数据查询（行情、财务、关系经营等）
+  - `stock-screen`：自然语言智能选股与结果导出
+- 新增数据正确性保障机制：
+  - Team-First 流程中加入关键性门控，非关键请求不消耗外部 API
+  - 配额治理：默认 50 次/日计数与上限拦截
+  - 缓存去重：重复问句优先复用结果，减少额度浪费
+  - 空结果与超范围请求统一提示，避免伪造占位数据
+- 新增安全与便携配置：
+  - 必须由用户自行申请并配置 `EASTMONEY_APIKEY`
+  - 支持系统环境变量优先，项目 `.env.local/.env` 回退
+  - 提供 `.env.example` 作为迁移模板，不提交真实密钥
+- 测试扩展至 **71 项并全部通过**，覆盖请求构造、路由触发、配额控制、脱敏输出与 `.env` 回退加载
 
 ### v2.2.3 (2026-03-13)
 

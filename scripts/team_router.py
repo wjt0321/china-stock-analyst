@@ -1,5 +1,10 @@
+import hashlib
+import json
 import re
+import threading
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 
 TEAM_TRIGGER_KEYWORDS = [
@@ -28,6 +33,25 @@ HIGH_INTENT_STAGE_KEYWORDS = {
 
 HIGH_INTENT_MIN_SCREENING_COUNT = 10
 HIGH_INTENT_MIN_RECOMMEND_COUNT = 3
+INTENT_CACHE_TTL_SECONDS = 300
+INTENT_DUPLICATE_WINDOW_SECONDS = 120
+INTENT_DUPLICATE_THRESHOLD = 3
+INTENT_REQUEST_LIMIT_MAX = 50
+INTENT_TIME_RANGE_MAX_DAYS = 180
+_INTENT_CACHE_FILE = Path(__file__).resolve().parent / ".team_router_intent_cache.json"
+_INTENT_ROUTE_LOG_FILE = Path(__file__).resolve().parent / ".team_router_intent_routes.json"
+_INTENT_LOCK = threading.Lock()
+_INTENT_RUNTIME_FALLBACK: dict = {}
+_INTENT_PRIORITY = {
+    "stock-screen": 3,
+    "query": 2,
+    "news-search": 1,
+}
+INTENT_KEYWORDS = {
+    "news-search": ["资讯", "新闻", "快讯", "公告", "研报", "舆情", "事件驱动"],
+    "query": ["行情", "资金流向", "财务", "估值", "指标", "主力净流入", "成交额"],
+    "stock-screen": ["选股", "筛选", "股票池", "低价股", "高增长", "量价齐升", "策略筛选"],
+}
 
 PRECONFIGURED_EXPERT_AGENTS = {
     "run_data_auditor": "stock-data-auditor",
@@ -50,6 +74,7 @@ def _append_reason(reasons: list, reason: str) -> None:
 def should_use_agent_team(user_request: str) -> dict:
     request = (user_request or "").strip()
     normalized_request = _normalize_request(request)
+    eastmoney_router = route_eastmoney_intent(request)
     reasons = []
     execution_profile = "lite_parallel"
     stock_codes = re.findall(r"\b[036]\d{5}\b", request)
@@ -79,7 +104,12 @@ def should_use_agent_team(user_request: str) -> dict:
     if execution_profile != "full_parallel" and _is_complex_team_request(normalized_request):
         execution_profile = "full_parallel"
         _append_reason(reasons, "复杂请求")
-    return {"use_team": True, "reasons": reasons, "execution_profile": execution_profile}
+    return {
+        "use_team": True,
+        "reasons": reasons,
+        "execution_profile": execution_profile,
+        "eastmoney_router": eastmoney_router,
+    }
 
 
 def build_skill_chain_plan(use_team: bool) -> dict:
@@ -180,6 +210,21 @@ def build_shortline_supervisor_rules() -> dict:
             "retry_policy": {"max_retries": 2, "backoff": "exponential"},
             "required_deliverables": ["team_consensus", "conflict_items", "final_recommendations"],
         },
+        "eastmoney_intent_router": {
+            "intents": list(INTENT_KEYWORDS.keys()),
+            "intent_keywords": dict(INTENT_KEYWORDS),
+            "critical_gate": {
+                "request_limit_max": INTENT_REQUEST_LIMIT_MAX,
+                "time_range_max_days": INTENT_TIME_RANGE_MAX_DAYS,
+                "duplicate_window_seconds": INTENT_DUPLICATE_WINDOW_SECONDS,
+                "duplicate_threshold": INTENT_DUPLICATE_THRESHOLD,
+            },
+            "local_persistence": {
+                "cache_file": str(_INTENT_CACHE_FILE),
+                "route_log_file": str(_INTENT_ROUTE_LOG_FILE),
+                "runtime_fallback": True,
+            },
+        },
         "fixed_steps": [
             "run_data_auditor",
             "collect_data",
@@ -209,6 +254,236 @@ def resolve_preconfigured_expert_agents() -> dict:
             "agent_file": str(agent_file) if exists else "",
         }
     return registry
+
+
+def route_eastmoney_intent(user_request: str, stock_code: str = "", stock_name: str = "") -> dict:
+    request = (user_request or "").strip()
+    normalized = _normalize_request(request)
+    route = _classify_eastmoney_intent(normalized)
+    gate = _build_critical_gate(route, normalized, stock_code=stock_code, stock_name=stock_name)
+    cache_result = _apply_intent_cache(route, gate, normalized)
+    route_result = {
+        "request": request,
+        "normalized_request": normalized,
+        "intent_category": route.get("intent_category", "none"),
+        "endpoint": route.get("endpoint", ""),
+        "matched_keywords": route.get("matched_keywords", []),
+        "intent_confidence": route.get("intent_confidence", 0.0),
+        "critical_gate": gate,
+        "cache": cache_result,
+        "fallback_mode": False,
+        "local_saved": False,
+        "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    route_result["local_saved"] = _persist_route_result(route_result)
+    return route_result
+
+
+def _classify_eastmoney_intent(request: str) -> dict:
+    if not request:
+        return {"intent_category": "none", "endpoint": "", "matched_keywords": [], "intent_confidence": 0.0}
+    score_map = {}
+    matched_map = {}
+    for intent, keywords in INTENT_KEYWORDS.items():
+        matched_keywords = [keyword for keyword in keywords if keyword in request]
+        matched_map[intent] = matched_keywords
+        score_map[intent] = len(matched_keywords)
+    top_score = max(score_map.values()) if score_map else 0
+    if top_score <= 0:
+        return {"intent_category": "none", "endpoint": "", "matched_keywords": [], "intent_confidence": 0.0}
+    candidates = [intent for intent, score in score_map.items() if score == top_score]
+    intent = sorted(candidates, key=lambda item: _INTENT_PRIORITY.get(item, 0), reverse=True)[0]
+    confidence = min(1.0, top_score / max(len(INTENT_KEYWORDS.get(intent, [])), 1))
+    return {
+        "intent_category": intent,
+        "endpoint": intent,
+        "matched_keywords": matched_map.get(intent, []),
+        "intent_confidence": round(confidence, 3),
+    }
+
+
+def _build_critical_gate(route: dict, request: str, stock_code: str = "", stock_name: str = "") -> dict:
+    reasons = []
+    blocked = False
+    requested_limit = _extract_request_limit(request)
+    requested_days = _extract_time_range_days(request)
+    intent = route.get("intent_category", "none")
+    if requested_limit and requested_limit > INTENT_REQUEST_LIMIT_MAX:
+        blocked = True
+        reasons.append(f"返回数量超限({requested_limit}>{INTENT_REQUEST_LIMIT_MAX})")
+    if requested_days and requested_days > INTENT_TIME_RANGE_MAX_DAYS:
+        blocked = True
+        reasons.append(f"时间范围超限({requested_days}>{INTENT_TIME_RANGE_MAX_DAYS}天)")
+    has_target = bool(stock_code) or bool(stock_name) or bool(re.findall(r"(?<!\d)[036]\d{5}(?!\d)", request))
+    if intent in {"news-search", "query"} and not has_target:
+        blocked = True
+        reasons.append("缺少标的约束(股票代码/名称)")
+    if intent == "none":
+        reasons.append("未命中东财意图，降级本地流程")
+    return {
+        "passed": not blocked,
+        "blocked_by_guardrail": blocked,
+        "reasons": reasons,
+        "requested_limit": requested_limit,
+        "requested_time_range_days": requested_days,
+        "fallback_action": "use_local_analysis_only" if blocked or intent == "none" else "allow_external_call",
+    }
+
+
+def _extract_request_limit(request: str) -> int:
+    if not request:
+        return 0
+    matches = re.findall(r"([0-9]{1,3})\s*(?:支|只|条|个)", request)
+    if not matches:
+        return 0
+    return max(int(item) for item in matches)
+
+
+def _extract_time_range_days(request: str) -> int:
+    if not request:
+        return 0
+    max_days = 0
+    for value in re.findall(r"近\s*([0-9]{1,4})\s*日", request):
+        max_days = max(max_days, int(value))
+    for value in re.findall(r"([0-9]{1,4})\s*天", request):
+        max_days = max(max_days, int(value))
+    for value in re.findall(r"([0-9]{1,3})\s*周", request):
+        max_days = max(max_days, int(value) * 7)
+    for value in re.findall(r"([0-9]{1,3})\s*月", request):
+        max_days = max(max_days, int(value) * 30)
+    for value in re.findall(r"([0-9]{1,2})\s*年", request):
+        max_days = max(max_days, int(value) * 365)
+    return max_days
+
+
+def _apply_intent_cache(route: dict, gate: dict, normalized_request: str) -> dict:
+    now = datetime.now()
+    cache_key = _build_intent_cache_key(normalized_request)
+    with _INTENT_LOCK:
+        cache_payload = _load_json_file(_INTENT_CACHE_FILE, default={"items": {}})
+        items = cache_payload.get("items", {})
+        cached = items.get(cache_key, {})
+        _cleanup_intent_cache(items, now)
+        if cached and _is_cache_alive(cached, now):
+            cached_response = dict(cached.get("response", {}))
+            cache_hit = True
+            hit_count = int(cached.get("hit_count", 0)) + 1
+            first_seen = _parse_cache_time(cached.get("first_seen")) or now
+            duplicate_threshold_triggered = (
+                hit_count > INTENT_DUPLICATE_THRESHOLD
+                and (now - first_seen) <= timedelta(seconds=INTENT_DUPLICATE_WINDOW_SECONDS)
+            )
+            if duplicate_threshold_triggered:
+                gate["passed"] = False
+                gate["blocked_by_guardrail"] = True
+                gate["fallback_action"] = "use_local_analysis_only"
+                _append_reason(gate["reasons"], f"命中重复请求阈值({hit_count}>{INTENT_DUPLICATE_THRESHOLD})")
+            items[cache_key] = {
+                "key": cache_key,
+                "request": normalized_request,
+                "created_at": cached.get("created_at", _now_text(now)),
+                "first_seen": cached.get("first_seen", _now_text(now)),
+                "updated_at": _now_text(now),
+                "hit_count": hit_count,
+                "response": cached_response,
+            }
+            _save_json_file(_INTENT_CACHE_FILE, {"items": items})
+            return {
+                "key": cache_key,
+                "cache_hit": cache_hit,
+                "dedup_hit": True,
+                "duplicate_threshold_triggered": duplicate_threshold_triggered,
+                "hit_count": hit_count,
+            }
+        items[cache_key] = {
+            "key": cache_key,
+            "request": normalized_request,
+            "created_at": _now_text(now),
+            "first_seen": _now_text(now),
+            "updated_at": _now_text(now),
+            "hit_count": 1,
+            "response": {"intent_category": route.get("intent_category", "none"), "gate_passed": gate.get("passed", False)},
+        }
+        _save_json_file(_INTENT_CACHE_FILE, {"items": items})
+    return {
+        "key": cache_key,
+        "cache_hit": False,
+        "dedup_hit": False,
+        "duplicate_threshold_triggered": False,
+        "hit_count": 1,
+    }
+
+
+def _cleanup_intent_cache(items: dict, now: datetime) -> None:
+    expired_keys = []
+    for key, value in items.items():
+        updated_at = _parse_cache_time(value.get("updated_at"))
+        if not updated_at or (now - updated_at).total_seconds() > INTENT_CACHE_TTL_SECONDS:
+            expired_keys.append(key)
+    for key in expired_keys:
+        items.pop(key, None)
+
+
+def _build_intent_cache_key(request: str) -> str:
+    return hashlib.sha256((request or "").encode("utf-8")).hexdigest()
+
+
+def _is_cache_alive(cache_item: dict, now: datetime) -> bool:
+    updated_at = _parse_cache_time(cache_item.get("updated_at"))
+    if not updated_at:
+        return False
+    return (now - updated_at).total_seconds() <= INTENT_CACHE_TTL_SECONDS
+
+
+def _parse_cache_time(text: str):
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _persist_route_result(route_result: dict) -> bool:
+    payload = _load_json_file(_INTENT_ROUTE_LOG_FILE, default={"routes": []})
+    routes = payload.get("routes", [])
+    routes.append(route_result)
+    if len(routes) > 200:
+        routes = routes[-200:]
+    payload["routes"] = routes
+    ok = _save_json_file(_INTENT_ROUTE_LOG_FILE, payload)
+    if not ok:
+        _INTENT_RUNTIME_FALLBACK["last_route"] = dict(route_result)
+    return ok
+
+
+def _load_json_file(file_path: Path, default: Any = None) -> dict:
+    if not file_path.exists():
+        return default if isinstance(default, dict) else {}
+    try:
+        with file_path.open("r", encoding="utf-8") as f:
+            loaded = json.load(f)
+            return loaded if isinstance(loaded, dict) else (default if isinstance(default, dict) else {})
+    except Exception:
+        return default if isinstance(default, dict) else {}
+
+
+def _save_json_file(file_path: Path, payload: dict) -> bool:
+    try:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        with file_path.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        return True
+    except Exception:
+        return False
+
+
+def _now_text(now: datetime = None) -> str:
+    current = now or datetime.now()
+    return current.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _build_industry_researcher_schema() -> dict:
