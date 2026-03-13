@@ -213,7 +213,7 @@ python -m unittest tests/test_stock_skill.py -v
 - 资金流向：扩展方向关键词列表，防止跨角色方向污染
 - 数据源验证：放宽类别要求（3→2）和时间戳冲突阈值（90→179 分钟），扩展数据源 domain 列表
 
-### v2.2.0 (2026-03-13)
+### v2.2.1 (2026-03-13)
 
 - 标的绑定增强：`parse_search_results_to_report` 支持 `stock_name` 输入并注入 `canonical_name/canonical_code`，多标的混合文本下身份校验更稳健
 - 资金方向兜底：无方向词场景改为保守判定，避免把“仅金额描述”误判为流入或流出
