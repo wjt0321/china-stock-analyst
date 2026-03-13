@@ -35,19 +35,27 @@ FAILURE_CODE_PRICE_CURRENCY_UNIT_INCONSISTENT = "PRICE_CURRENCY_UNIT_INCONSISTEN
 FAILURE_CODE_PRICE_CURRENCY_UNIT_EVIDENCE_INSUFFICIENT = "PRICE_CURRENCY_UNIT_EVIDENCE_INSUFFICIENT"
 
 
-def parse_search_results_to_report(search_results: list, stock_code: str, request_date: str = "") -> dict:
+def parse_search_results_to_report(
+    search_results: list,
+    stock_code: str,
+    stock_name: str = "",
+    request_date: str = "",
+) -> dict:
     """
     将搜索结果解析为结构化报告数据
 
     Args:
         search_results: Web Search 返回的结果列表
         stock_code: 股票代码
+        stock_name: 股票名称（可选，作为标的绑定锚点）
 
     Returns:
         包含解析后数据的字典
     """
     report = {
         "stock_code": stock_code,
+        "canonical_code": stock_code,
+        "canonical_name": normalize_stock_name(stock_name) if stock_name else "",
         "price_info": {},
         "fund_flow": {},
         "financial": {},
@@ -195,6 +203,8 @@ def _parse_fund_flow(snippet: str) -> dict:
 # 资金流向方向关键词（正向=流入，负向=流出）
 _FLOW_INFLOW_WORDS = ["净流入", "净买入", "主动买入", "买超"]
 _FLOW_OUTFLOW_WORDS = ["净流出", "净卖出", "主动卖出", "卖超"]
+_FLOW_INFLOW_HINTS = _FLOW_INFLOW_WORDS + ["流入", "买入"]
+_FLOW_OUTFLOW_HINTS = _FLOW_OUTFLOW_WORDS + ["流出", "卖出"]
 # 同义方向词结合体，直接嵌入正则
 _FLOW_DIRECTION_GROUP = r'(' + '|'.join(_FLOW_OUTFLOW_WORDS + _FLOW_INFLOW_WORDS) + r')'
 
@@ -217,13 +227,21 @@ def _extract_flow_amount(snippet: str, role: str):
         return abs(amount)
 
     # 降级：无方向词时，仅在角色关键词后5字符内找数字，防止跨描述污染
-    pattern_no_dir = rf'{role}[资金]*[^\uff0c\u3002,\uff1b;]{{0,30}}?([+-]?\d+\.?\d*)\s*(\u4ebf\u5143|\u4ebf|\u4e07\u5143|\u4e07|\u5143)?'
+    pattern_no_dir = rf'({role}[资金]*[^\uff0c\u3002,\uff1b;]{{0,30}}?)([+-]?\d+\.?\d*)\s*(\u4ebf\u5143|\u4ebf|\u4e07\u5143|\u4e07|\u5143)?'
     match2 = re.search(pattern_no_dir, snippet)
     if not match2:
         return None
-    amount_raw = float(match2.group(1))
-    unit = match2.group(2) or '\u4e07\u5143'
-    return _normalize_to_wan(amount_raw, unit)
+    context_text = match2.group(1) or ""
+    amount_raw = float(match2.group(2))
+    unit = match2.group(3) or '\u4e07\u5143'
+    amount = _normalize_to_wan(abs(amount_raw), unit)
+    if amount_raw < 0:
+        return -amount
+    if any(word in context_text for word in _FLOW_OUTFLOW_HINTS):
+        return -amount
+    if any(word in context_text for word in _FLOW_INFLOW_HINTS):
+        return amount
+    return None
 
 
 def _normalize_to_wan(value: float, unit: str) -> float:
@@ -764,14 +782,21 @@ def _validate_identity_with_sources(report: dict, expected_code: str) -> dict:
     if len(categories) < 2:
         reasons.append(f"身份来源类别不足({len(categories)}/2)")
         reason_codes.append(FAILURE_CODE_IDENTITY_EVIDENCE_INSUFFICIENT)
-    canonical_name = ""
+    canonical_code = report.get("canonical_code", expected_code) or expected_code
+    canonical_name = normalize_stock_name(report.get("canonical_name", ""))
     canonical_candidates = []
     for item in matched:
         normalized = normalize_stock_name(item.get("stock_name", ""))
         if normalized:
             canonical_candidates.append(normalized)
     canonical_candidates = list(dict.fromkeys(canonical_candidates))
-    if canonical_candidates:
+    if canonical_name:
+        for candidate in canonical_candidates:
+            if not is_stock_name_alias(canonical_name, candidate):
+                reasons.append(f"代码{expected_code}对应名称冲突: {canonical_name} vs {candidate}")
+                reason_codes.append(FAILURE_CODE_IDENTITY_CODE_NAME_MISMATCH)
+                break
+    elif canonical_candidates:
         canonical_name = canonical_candidates[0]
         for candidate in canonical_candidates[1:]:
             if not is_stock_name_alias(canonical_name, candidate):
@@ -810,6 +835,7 @@ def _validate_identity_with_sources(report: dict, expected_code: str) -> dict:
         "reason_codes": list(dict.fromkeys(reason_codes)),
         "evidences": evidences,
         "summary": {
+            "canonical_code": canonical_code or "N/A",
             "canonical_name": canonical_name or "N/A",
             "evidence_count": len(matched),
             "category_count": len(categories),
@@ -1082,7 +1108,7 @@ def format_analysis_report(stock_code: str, stock_name: str, search_data: list) 
     Returns:
         格式化的报告文本
     """
-    report = parse_search_results_to_report(search_data, stock_code)
+    report = parse_search_results_to_report(search_data, stock_code, stock_name=stock_name)
 
     lines = []
     lines.append("=" * 50)

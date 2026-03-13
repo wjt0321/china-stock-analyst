@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-purple.svg)
-![Tests](https://img.shields.io/badge/Tests-42%20Passed-success.svg)
+![Tests](https://img.shields.io/badge/Tests-52%20Passed-success.svg)
 
 **📈 A股短线交易分析助手 | Team-First 并行专家系统**
 
@@ -59,7 +59,7 @@ git clone https://github.com/wjt0321/china-stock-analyst.git
 python -m unittest tests/test_stock_skill.py -v
 ```
 
-当前测试结果：**42 个用例全部通过** ✅
+当前测试结果：**52 个用例全部通过** ✅
 
 ---
 
@@ -212,6 +212,14 @@ python -m unittest tests/test_stock_skill.py -v
 - 价格解析：优先从语义锚点（最新价/现价/收盘价等）提取股价，添加 A 股价格区间校验（0.1-600 元）
 - 资金流向：扩展方向关键词列表，防止跨角色方向污染
 - 数据源验证：放宽类别要求（3→2）和时间戳冲突阈值（90→179 分钟），扩展数据源 domain 列表
+
+### v2.2.0 (2026-03-13)
+
+- 标的绑定增强：`parse_search_results_to_report` 支持 `stock_name` 输入并注入 `canonical_name/canonical_code`，多标的混合文本下身份校验更稳健
+- 资金方向兜底：无方向词场景改为保守判定，避免把“仅金额描述”误判为流入或流出
+- 审计回归补强：新增“阈值内不冲突”“双类别通过”等回归测试，降低误报同时保证可解释性
+- 文档完善：补充数据提取原则（价格锚点优先、多标的过滤）
+- 测试扩展：测试集扩展至 52 项并全部通过
 
 ### v2.1.0 (2026-03-12)
 

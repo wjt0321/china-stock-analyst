@@ -2,6 +2,9 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
+.coverage
+htmlcov/
 *.so
 .Python
 
@@ -23,3 +26,6 @@ Thumbs.db
 
 # Stock reports (optional - comment out if you want to track reports)
 # stock-reports/*.md
+
+# 代码审核文件
+code_review_report.md

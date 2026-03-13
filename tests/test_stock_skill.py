@@ -250,6 +250,18 @@ class TestStockSkill(unittest.TestCase):
         self.assertEqual(report["fund_flow"]["main"], "-16700.00")
         self.assertEqual(report["fund_flow"]["retail"], "3200.00")
 
+    def test_fund_flow_should_use_conservative_fallback_when_direction_missing(self):
+        search_data = [
+            {
+                "title": "资金流向",
+                "snippet": "主力资金1.67亿元，散户资金3200万元",
+                "link": "http://example.com",
+            }
+        ]
+        report = parse_search_results_to_report(search_data, "600000")
+        self.assertNotIn("main", report["fund_flow"])
+        self.assertNotIn("retail", report["fund_flow"])
+
     def test_shortline_signals_should_extract_vwap_volume_ratio_and_atr_stop(self):
         search_data = [
             {
@@ -263,6 +275,51 @@ class TestStockSkill(unittest.TestCase):
         self.assertEqual(signals.get("vwap_deviation"), "2.35")
         self.assertEqual(signals.get("volume_ratio"), "1.92")
         self.assertEqual(signals.get("atr_stop"), "3.51")
+
+    def test_parse_report_should_inject_canonical_code_and_name_from_input(self):
+        search_data = [
+            {
+                "title": "行情播报",
+                "snippet": "600000 最新价10.20元，更新时间2026-03-10 10:05",
+                "link": "https://www.sse.com.cn/marketdata",
+                "timestamp": "2026-03-10 10:05",
+            },
+            {
+                "title": "盘中快讯",
+                "snippet": "代码600000 最新价10.22元，成交额2.1亿元，更新时间2026-03-10 10:06",
+                "link": "https://www.yicai.com/news/stock",
+                "timestamp": "2026-03-10 10:06",
+            },
+        ]
+        report = parse_search_results_to_report(search_data, "600000", stock_name="浦发银行")
+        self.assertEqual(report.get("canonical_code"), "600000")
+        self.assertEqual(report.get("canonical_name"), "浦发银行")
+        gate = report.get("expert_identity_gate", {})
+        self.assertFalse(any("未提取到代码600000对应名称" in reason for reason in gate.get("failed_reasons", [])))
+        identity_summary = gate.get("identity_source_summary", {})
+        self.assertEqual(identity_summary.get("canonical_code"), "600000")
+        self.assertEqual(identity_summary.get("canonical_name"), "浦发银行")
+
+    def test_identity_gate_should_use_input_canonical_name_as_binding_anchor(self):
+        search_data = [
+            {
+                "title": "浦发银行(600000) 行情播报",
+                "snippet": "浦发银行(600000) 最新价10.20元/股，更新时间2026-03-10 10:05",
+                "link": "https://www.sse.com.cn/marketdata",
+                "timestamp": "2026-03-10 10:05",
+            },
+            {
+                "title": "招商银行(600000) 行情播报",
+                "snippet": "招商银行(600000) 最新价10.21元/股，更新时间2026-03-10 10:06",
+                "link": "https://www.yicai.com/news/stock",
+                "timestamp": "2026-03-10 10:06",
+            },
+        ]
+        report = parse_search_results_to_report(search_data, "600000", stock_name="浦发银行")
+        gate = report.get("expert_identity_gate", {})
+        self.assertFalse(gate.get("identity_passed"))
+        self.assertIn("IDENTITY_CODE_NAME_MISMATCH", gate.get("failed_reason_codes", []))
+        self.assertTrue(any("浦发银行 vs 招商银行" in reason for reason in gate.get("failed_reasons", [])))
 
     def test_data_audit_should_require_resample_when_date_rolls_back(self):
         search_data = self._build_multi_source_core_data(
@@ -283,6 +340,23 @@ class TestStockSkill(unittest.TestCase):
         self.assertFalse(gate.get("passed"))
         reasons = " ".join(gate.get("downgrade_reasons", []))
         self.assertIn("多源时间戳冲突", reasons)
+
+    def test_data_audit_should_not_mark_conflict_within_threshold(self):
+        search_data = self._build_multi_source_core_data(
+            ["2026-03-10 09:30", "2026-03-10 09:35", "2026-03-10 12:29"]
+        )
+        report = parse_search_results_to_report(search_data, "600000", request_date="2026-03-10")
+        gate = report.get("audit_gate", {})
+        reasons = " ".join(gate.get("downgrade_reasons", []))
+        self.assertNotIn("多源时间戳冲突", reasons)
+
+    def test_data_audit_should_pass_when_source_categories_reach_two(self):
+        search_data = self._build_multi_source_core_data(
+            ["2026-03-10 09:30", "2026-03-10 09:35", "2026-03-10 09:45"]
+        )
+        report = parse_search_results_to_report(search_data, "600000", request_date="2026-03-10")
+        gate = report.get("audit_gate", {})
+        self.assertTrue(gate.get("passed"))
 
     def test_data_audit_should_fail_when_source_categories_are_insufficient(self):
         search_data = [
