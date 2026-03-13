@@ -123,6 +123,21 @@ description: A股短线营收分析助手，聚焦“短线交易信号 + 营收
 | 07 | 消息面猎手 | 事件驱动交易 | 公告政策、监管信号、事件冲击 |
 | 08 | 专家鉴别Agent | 质量门控与一致性校验 | 专家身份、标的一致性、价格锚点偏差 |
 
+#### 预置专家 Agent 调用规则
+- 优先从 `c:\Users\Administrator\.claude\agents` 读取专家 Agent
+- 推荐映射：
+  - `run_data_auditor` → `stock-data-auditor`
+  - `run_fundamental_expert` → `stock-fundamental-expert`
+  - `run_technical_expert` → `stock-technical-expert`
+  - `run_quant_flow_expert` → `stock-quant-flow-expert`
+  - `run_risk_expert` → `stock-risk-expert`
+  - `run_macro_expert` → `stock-macro-expert`
+  - `run_industry_researcher_expert` → `stock-industry-researcher`
+  - `run_event_hunter_expert` → `stock-event-hunter`
+  - `run_expert_identifier_agent` → `stock-identity-auditor`
+- 若某个预置 Agent 缺失，则该角色自动回退为默认内置执行路径，不中断整体 Team 流程
+- 输出时应标记角色调用来源（`preconfigured` 或 `default`）便于排障
+
 ### 第三步：讨论与整合
 - 收集各专家观点
 - 识别共识与分歧

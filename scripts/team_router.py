@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 
 
 TEAM_TRIGGER_KEYWORDS = [
@@ -27,6 +28,18 @@ HIGH_INTENT_STAGE_KEYWORDS = {
 
 HIGH_INTENT_MIN_SCREENING_COUNT = 10
 HIGH_INTENT_MIN_RECOMMEND_COUNT = 3
+
+PRECONFIGURED_EXPERT_AGENTS = {
+    "run_data_auditor": "stock-data-auditor",
+    "run_fundamental_expert": "stock-fundamental-expert",
+    "run_technical_expert": "stock-technical-expert",
+    "run_quant_flow_expert": "stock-quant-flow-expert",
+    "run_risk_expert": "stock-risk-expert",
+    "run_macro_expert": "stock-macro-expert",
+    "run_industry_researcher_expert": "stock-industry-researcher",
+    "run_event_hunter_expert": "stock-event-hunter",
+    "run_expert_identifier_agent": "stock-identity-auditor",
+}
 
 
 def _append_reason(reasons: list, reason: str) -> None:
@@ -148,6 +161,8 @@ def build_shortline_supervisor_rules() -> dict:
             "run_event_hunter_expert": _build_event_hunter_schema(),
             "run_expert_identifier_agent": _build_expert_identifier_schema(),
         },
+        "expert_agent_map": dict(PRECONFIGURED_EXPERT_AGENTS),
+        "expert_agent_registry": resolve_preconfigured_expert_agents(),
         "conflict_arbitration_rules": [
             "行业景气正向但事件冲击为强负向时，主管将标签上限降为观察",
             "行业景气负向且事件冲击负向时，主管将标签上限降为回避",
@@ -180,6 +195,20 @@ def build_shortline_supervisor_rules() -> dict:
             "render_report",
         ],
     }
+
+
+def resolve_preconfigured_expert_agents() -> dict:
+    agents_root = Path(__file__).resolve().parents[3] / "agents"
+    registry = {}
+    for step, agent_name in PRECONFIGURED_EXPERT_AGENTS.items():
+        agent_file = agents_root / f"{agent_name}.md"
+        exists = agent_file.exists()
+        registry[step] = {
+            "agent_name": agent_name,
+            "source": "preconfigured" if exists else "default",
+            "agent_file": str(agent_file) if exists else "",
+        }
+    return registry
 
 
 def _build_industry_researcher_schema() -> dict:

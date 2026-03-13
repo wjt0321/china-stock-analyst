@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import generate_report as gr  # noqa: E402
+import team_router as tr  # noqa: E402
 from generate_report import parse_search_results_to_report, _generate_advice  # noqa: E402
 from stock_utils import get_search_queries, get_shortline_indicator_recommendations  # noqa: E402
 from team_router import should_use_agent_team, build_skill_chain_plan  # noqa: E402
@@ -105,6 +106,23 @@ class TestStockSkill(unittest.TestCase):
         self.assertEqual(continuity_guard.get("failure_policy"), "isolate_and_continue")
         self.assertFalse(continuity_guard.get("single_flow_fallback", True))
         self.assertEqual(continuity_guard.get("retry_policy", {}).get("max_retries"), 2)
+
+    def test_team_rules_should_expose_preconfigured_agent_registry(self):
+        plan = build_skill_chain_plan(use_team=True)
+        registry = plan["team_rules"].get("expert_agent_registry", {})
+        self.assertIn("run_data_auditor", registry)
+        self.assertIn("run_fundamental_expert", registry)
+        self.assertIn("run_expert_identifier_agent", registry)
+        self.assertIn(registry["run_data_auditor"].get("source"), ["preconfigured", "default"])
+
+    def test_preconfigured_agent_should_fallback_when_mapping_file_missing(self):
+        original = tr.PRECONFIGURED_EXPERT_AGENTS["run_data_auditor"]
+        tr.PRECONFIGURED_EXPERT_AGENTS["run_data_auditor"] = "agent-file-not-exist-for-test"
+        try:
+            registry = tr.resolve_preconfigured_expert_agents()
+        finally:
+            tr.PRECONFIGURED_EXPERT_AGENTS["run_data_auditor"] = original
+        self.assertEqual(registry["run_data_auditor"]["source"], "default")
 
     def test_should_have_obsidian_markdown_formatter(self):
         self.assertTrue(callable(getattr(gr, "format_obsidian_markdown_report", None)))

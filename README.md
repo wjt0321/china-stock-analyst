@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-purple.svg)
-![Tests](https://img.shields.io/badge/Tests-54%20Passed-success.svg)
+![Tests](https://img.shields.io/badge/Tests-56%20Passed-success.svg)
 
 **📈 A股短线交易分析助手 | Team-First 并行专家系统**
 
@@ -171,6 +171,16 @@ china-stock-analyst/
 │   ├── team_router.py
 │   ├── generate_report.py
 │   └── stock_utils.py
+├── agents/
+│   ├── stock-data-auditor.md
+│   ├── stock-fundamental-expert.md
+│   ├── stock-technical-expert.md
+│   ├── stock-quant-flow-expert.md
+│   ├── stock-risk-expert.md
+│   ├── stock-macro-expert.md
+│   ├── stock-industry-researcher.md
+│   ├── stock-event-hunter.md
+│   └── stock-identity-auditor.md
 ├── tests/
 │   └── test_stock_skill.py
 ├── assets/
@@ -206,6 +216,14 @@ python -m unittest tests/test_stock_skill.py -v
 ---
 
 ## 📅 更新日志
+
+### v2.2.3 (2026-03-13)
+
+- 新增 `agents/` 预设专家目录：将 Team-First 常用角色前置为可直接复用的 Agent 定义，减少运行时拼装提示词开销
+- 路由新增“预置优先 + 默认兜底”：可命中预设 Agent 时使用 `preconfigured`，缺失时自动回退 `default`，不打断流程
+- 输出增加角色调用来源注册信息，便于审计与排障
+- `SKILL.md` 补充预设 Agent 映射、启用规则与回退策略说明
+- 测试扩展至 56 项并全部通过（含命中与回退场景）
 
 ### v2.2.1 (2026-03-13)
 
