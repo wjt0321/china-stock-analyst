@@ -96,13 +96,17 @@ def parse_search_results_to_report(
         link = result.get('link', '')
         source = _build_source_meta(result)
         report["identity_mentions"].extend(_extract_identity_mentions(f"{title} {snippet}", source))
-        price_semantic = _extract_price_semantic(f"{title} {snippet}", source)
+        price_semantic = _extract_price_semantic(
+            f"{title} {snippet}",
+            source,
+            request_date=request_date,
+        )
         if price_semantic:
             report["price_semantic_records"].append(price_semantic)
 
         # 解析价格信息
         if '最新价' in snippet or '股价' in title:
-            parsed = _parse_price(snippet)
+            parsed = _parse_price(snippet, request_date=request_date)
             report['price_info'].update(parsed)
             _record_field_sources(report, "price", parsed, source)
 
@@ -152,8 +156,8 @@ def parse_search_results_to_report(
 
 # 优先从明确的价格关键词后提取股价，避免误取止损位/历史价等
 _PRICE_ANCHOR_RE = re.compile(
-    r'(?:最新价|现价|收盘价|当前价格|报价|今日收盘|股价)\s*[：:=]?\s*'
-    r'([0-9]+\.?[0-9]*)\s*元'
+    r'(?P<label>最新价|现价|收盘价|当前价格|报价|今日收盘|当日收盘|股价)\s*[：:=]?\s*'
+    r'(?P<value>[0-9]+\.?[0-9]*)\s*元'
 )
 _PRICE_FALLBACK_RE = re.compile(r'([0-9]+\.?[0-9]*)\s*元(?:/股)?')
 # A股合理价格区间（单位：元/股）
@@ -161,13 +165,19 @@ _A_SHARE_PRICE_MIN = 0.1
 _A_SHARE_PRICE_MAX = 600.0
 
 
-def _parse_price(snippet: str) -> dict:
+def _parse_price(snippet: str, request_date: str = "") -> dict:
     parsed = {}
+    same_day_close = _is_same_day_close_semantic(snippet, request_date=request_date)
     # 优先：从语义锚点（最新价/现价等）后取价格
-    m = _PRICE_ANCHOR_RE.search(snippet)
-    if m:
-        parsed['price'] = m.group(1)
-    else:
+    anchor_matched = False
+    for m in _PRICE_ANCHOR_RE.finditer(snippet):
+        label = (m.group("label") or "").strip()
+        if label == "收盘价" and not same_day_close:
+            continue
+        parsed['price'] = m.group("value")
+        anchor_matched = True
+        break
+    if not anchor_matched and ("收盘价" not in snippet or same_day_close):
         # 降级：遍历所有"X元"，取第一个落在A股合理价格区间的值
         for m2 in _PRICE_FALLBACK_RE.finditer(snippet):
             try:
@@ -305,7 +315,7 @@ def _build_source_meta(result: dict) -> dict:
     )
     normalized_timestamp = normalize_timestamp_text(raw_timestamp)
     if not normalized_timestamp:
-        normalized_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        normalized_timestamp = "N/A"
     return {
         "source_url": link or "N/A",
         "source_title": title or "N/A",
@@ -335,7 +345,14 @@ def _record_field_sources(report: dict, section: str, updates: dict, source: dic
 
 
 # 代码与名称关联的局部窗口大小（字符数），避免跨标的张冠李戴
-_IDENTITY_WINDOW_SIZE = 50
+_IDENTITY_WINDOW_SIZE = 40
+_IDENTITY_MAX_BIND_GAP = 6
+_IDENTITY_NAME_CHARS = r"[\u4e00-\u9fa5A-Za-z\*STＳＴ]"
+_IDENTITY_AMBIGUOUS_SEPARATORS_RE = re.compile(r"(与|和|及|或|对比|vs|VS|/|、)")
+_IDENTITY_NOISE_KEYWORDS = [
+    "最新价", "行情", "播报", "快讯", "报价", "更新", "盘中", "交易", "数据", "资讯",
+    "行业", "竞争", "格局", "需求", "回暖", "监管", "问询", "风险", "公告", "事件", "冲击", "趋势",
+]
 
 
 def _extract_identity_mentions(text: str, source: dict) -> list:
@@ -343,27 +360,31 @@ def _extract_identity_mentions(text: str, source: dict) -> list:
     merged_text = text or ""
     for match in re.finditer(r"(?<!\d)([036]\d{5})(?!\d)", merged_text):
         code = match.group(1)
-        # 关键修复：只在代码周围±_IDENTITY_WINDOW_SIZE字符的局部窗口内提取名称
-        # 防止多标的文本中代码与名称交叉配对
-        local_start = max(0, match.start() - _IDENTITY_WINDOW_SIZE)
-        local_end = min(len(merged_text), match.end() + _IDENTITY_WINDOW_SIZE)
-        local_window = merged_text[local_start:local_end]
-        name_candidates = _extract_stock_name_candidates(local_window, code)
-        for candidate in name_candidates:
-            normalized_name = normalize_stock_name(candidate)
-            if not normalized_name:
-                continue
-            mentions.append(
-                {
-                    "stock_code": code,
-                    "stock_name": normalized_name,
-                    "raw_stock_name": candidate,
-                    "source_url": source.get("source_url", "N/A"),
-                    "source_title": source.get("source_title", "N/A"),
-                    "source_category": source.get("source_category", "其他来源"),
-                    "timestamp": source.get("timestamp", "N/A"),
-                }
-            )
+        candidates = _extract_adjacent_identity_candidates(
+            merged_text,
+            code,
+            match.start(),
+            match.end(),
+        )
+        unique_names = {item["stock_name"] for item in candidates if item.get("stock_name")}
+        # 强邻接绑定：同一代码在局部窗口内若出现多个不同名称，视为歧义并拒绝绑定
+        if len(unique_names) != 1:
+            continue
+        best_candidate = sorted(
+            candidates,
+            key=lambda item: (-item.get("confidence", 0), item.get("distance", 999)),
+        )[0]
+        mentions.append(
+            {
+                "stock_code": code,
+                "stock_name": best_candidate.get("stock_name", ""),
+                "raw_stock_name": best_candidate.get("raw_stock_name", ""),
+                "source_url": source.get("source_url", "N/A"),
+                "source_title": source.get("source_title", "N/A"),
+                "source_category": source.get("source_category", "其他来源"),
+                "timestamp": source.get("timestamp", "N/A"),
+            }
+        )
     unique = []
     seen = set()
     for item in mentions:
@@ -377,6 +398,69 @@ def _extract_identity_mentions(text: str, source: dict) -> list:
             seen.add(key)
             unique.append(item)
     return unique
+
+
+def _extract_adjacent_identity_candidates(text: str, stock_code: str, code_start: int, code_end: int) -> list:
+    if not text:
+        return []
+    local_start = max(0, code_start - _IDENTITY_WINDOW_SIZE)
+    local_end = min(len(text), code_end + _IDENTITY_WINDOW_SIZE)
+    local_text = text[local_start:local_end]
+    local_code_start = code_start - local_start
+    local_code_end = code_end - local_start
+    patterns = [
+        # 名称(代码)
+        (re.compile(rf"({_IDENTITY_NAME_CHARS}{{2,20}})\s*[\(（]\s*{stock_code}\s*[\)）]"), "name_before_code", 3),
+        # 名称 代码
+        (re.compile(rf"({_IDENTITY_NAME_CHARS}{{2,20}})\s*{stock_code}"), "name_before_code", 2),
+        # 代码:名称
+        (re.compile(rf"{stock_code}\s*[-—:：]?\s*({_IDENTITY_NAME_CHARS}{{2,20}})"), "code_before_name", 2),
+    ]
+    candidates = []
+    for pattern, bind_type, confidence in patterns:
+        for matched in pattern.finditer(local_text):
+            if not (matched.start() <= local_code_start <= matched.end()):
+                continue
+            raw_name = matched.group(1)
+            normalized_name = _normalize_identity_name_candidate(raw_name)
+            if not normalized_name:
+                continue
+            if bind_type == "name_before_code":
+                between = local_text[matched.end(1):local_code_start]
+                distance = max(local_code_start - matched.end(1), 0)
+            else:
+                between = local_text[local_code_end:matched.start(1)]
+                distance = max(matched.start(1) - local_code_end, 0)
+            if distance > _IDENTITY_MAX_BIND_GAP:
+                continue
+            if _IDENTITY_AMBIGUOUS_SEPARATORS_RE.search(between or ""):
+                continue
+            candidates.append(
+                {
+                    "stock_name": normalized_name,
+                    "raw_stock_name": raw_name,
+                    "distance": distance,
+                    "confidence": confidence,
+                }
+            )
+    deduped = []
+    seen = set()
+    for item in candidates:
+        key = (item.get("stock_name", ""), item.get("raw_stock_name", ""), item.get("distance", 0))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _normalize_identity_name_candidate(raw_name: str) -> str:
+    cleaned = re.sub(r"^(股票|个股|代码|标的)", "", raw_name or "").strip(" -—:：，,。.;；")
+    if not cleaned or not re.search(r"[\u4e00-\u9fa5A-Za-z]", cleaned):
+        return ""
+    if any(keyword in cleaned for keyword in _IDENTITY_NOISE_KEYWORDS):
+        return ""
+    return normalize_stock_name(cleaned)
 
 
 def _extract_stock_name_candidates(text: str, stock_code: str) -> list:
@@ -407,9 +491,11 @@ def _extract_stock_name_candidates(text: str, stock_code: str) -> list:
     return unique
 
 
-def _extract_price_semantic(text: str, source: dict) -> dict:
+def _extract_price_semantic(text: str, source: dict, request_date: str = "") -> dict:
     merged_text = text or ""
     if not re.search(r"(最新价|股价|收盘价|现价|报价)", merged_text):
+        return {}
+    if not _is_same_day_close_semantic(merged_text, request_date=request_date):
         return {}
     currency = "CNY"
     if re.search(r"(美元|USD|美金)", merged_text, re.IGNORECASE):
@@ -438,6 +524,22 @@ def _extract_price_semantic(text: str, source: dict) -> dict:
     }
 
 
+def _is_same_day_close_semantic(text: str, request_date: str = "") -> bool:
+    merged_text = text or ""
+    if "收盘价" not in merged_text and "收盘" not in merged_text:
+        return True
+    if re.search(r"(昨收|昨日收盘|前收|上一交易日收盘|历史收盘|上周收盘|上月收盘)", merged_text):
+        return False
+    if re.search(r"(今日收盘|当日收盘|本日收盘|今日盘后|当日盘后)", merged_text):
+        return True
+    request_dt = _parse_day(request_date) or datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    explicit_dt = _parse_day(extract_timestamp_text(merged_text, ""))
+    if explicit_dt:
+        return explicit_dt.date() == request_dt.date()
+    # 仅出现“收盘价”但没有“当日/今日”语义和日期锚点，按歧义拒绝处理
+    return False
+
+
 def _run_data_authenticity_audit(report: dict, request_date: str = "") -> dict:
     source_pool = get_realtime_source_pool()
     required_categories = source_pool.get("required_categories", 3)
@@ -451,16 +553,25 @@ def _run_data_authenticity_audit(report: dict, request_date: str = "") -> dict:
     for field in source_pool.get("core_fields", []):
         matched_records = _pick_field_records(field_sources, field)
         categories = {item.get("source_category", "其他来源") for item in matched_records}
-        timestamps = [_parse_timestamp(item.get("timestamp", "")) for item in matched_records]
-        timestamps = [ts for ts in timestamps if ts]
+        parsed_timestamps = [_parse_timestamp(item.get("timestamp", "")) for item in matched_records]
+        timestamps = [ts for ts in parsed_timestamps if ts]
+        timestamp_missing = bool(matched_records) and len(timestamps) < len(matched_records)
         date_rollback = any(ts < request_dt for ts in timestamps)
         timestamp_conflict = _has_timestamp_conflict(timestamps, threshold_minutes)
         category_insufficient = len(categories) < required_categories
-        trusted = bool(matched_records) and not date_rollback and not timestamp_conflict and not category_insufficient
+        trusted = (
+            bool(matched_records)
+            and not timestamp_missing
+            and not date_rollback
+            and not timestamp_conflict
+            and not category_insufficient
+        )
         consistency = "一致" if trusted else "不一致"
         reasons = []
         if not matched_records:
             reasons.append("缺失来源记录")
+        if timestamp_missing:
+            reasons.append("缺失时间戳")
         if date_rollback:
             reasons.append("日期回退")
         if timestamp_conflict:
@@ -1219,14 +1330,13 @@ def format_obsidian_markdown_report(payload: dict) -> str:
 
 def plan_analysis_route(user_request: str) -> dict:
     decision = should_use_agent_team(user_request)
-    plan = build_skill_chain_plan(
-        use_team=decision.get("execution_profile", "lite_parallel") == "full_parallel"
-    )
+    # lite/full 统一走 Team 编排，仅执行强度由 execution_profile 控制
+    plan = build_skill_chain_plan(use_team=True)
     return {
         "mode": plan.get("mode", "agent_team"),
         "steps": plan.get("steps", []),
         "reasons": decision.get("reasons", []),
-        "execution_profile": plan.get("execution_profile", decision.get("execution_profile", "lite_parallel")),
+        "execution_profile": decision.get("execution_profile", plan.get("execution_profile", "lite_parallel")),
         "team_rules": plan.get("team_rules", {}),
     }
 

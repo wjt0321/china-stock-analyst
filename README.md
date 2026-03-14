@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-purple.svg)
-![Tests](https://img.shields.io/badge/Tests-71%20Passed-success.svg)
+![Tests](https://img.shields.io/badge/Tests-79%20Passed-success.svg)
 
 **📈 A股短线交易分析助手 | Team-First 并行专家系统**
 
@@ -62,7 +62,7 @@ git clone https://github.com/wjt0321/china-stock-analyst.git
 python -m unittest tests/test_stock_skill.py -v
 ```
 
-当前测试结果：**54 个用例全部通过** ✅
+当前测试结果：**79 个用例全部通过** ✅
 
 ### 东方财富 API 配置（必做）
 
@@ -225,6 +225,7 @@ python -m unittest tests/test_stock_skill.py -v
 - 舆情降噪与评分封顶
 - 新增专家与主管仲裁
 - 复杂请求端到端闭环验证
+- 当前回归测试总量：**79 项（全部通过）**
 
 ---
 
@@ -235,6 +236,26 @@ python -m unittest tests/test_stock_skill.py -v
 ---
 
 ## 📅 更新日志
+
+### v2.3.1 (2026-03-14)
+
+- 发布 Release/Tag：`2.3.1`
+- 新增时间戳治理：
+  - 统一采用分钟级时间戳对齐与比对，减少跨源时间颗粒度不一致带来的误判
+  - 在证据链与审计结果中补充时间语义提示，提升“可追溯 + 可解释”能力
+- 收盘价语义收敛：
+  - “收盘价”仅在具备“当日/今日”语义或可验证日期锚点时视为有效当前价
+  - 对“仅出现收盘价但缺少当日语义”的文本执行歧义拒绝，避免历史价误当现价
+- 路由策略更新（lite/full）：
+  - lite/full 均统一走 Team 编排主路径，确保流程一致性
+  - 仅通过执行强度（`execution_profile`）区分并发与推理深度，不再分叉核心链路
+- 标的绑定强化：
+  - 启用“名称-代码强邻接”约束，要求局部窗口内形成稳定绑定关系
+  - 同一代码邻接多个名称或同一名称邻接多个代码时，触发歧义拒绝并阻断错误绑定
+- ST 语义保留：
+  - 名称标准化过程中默认保留 ST 前缀，不做去标处理
+  - 兼容 ST/非 ST 别名映射，避免风控语义在归一化阶段丢失
+- 测试扩展至 **79 项并全部通过**，新增覆盖收盘价当日语义判定、lite/full 团队路由一致性、强邻接歧义拒绝与 ST 前缀保留
 
 ### v2.3.0 (2026-03-13)
 

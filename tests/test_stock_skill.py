@@ -60,6 +60,14 @@ class TestStockSkill(unittest.TestCase):
         self.assertEqual(route["mode"], "agent_team")
         self.assertEqual(route["execution_profile"], "lite_parallel")
 
+    def test_route_plan_should_keep_team_fixed_steps_even_in_lite_parallel(self):
+        route = gr.plan_analysis_route("分析 600519")
+        self.assertEqual(route["execution_profile"], "lite_parallel")
+        self.assertIn("run_macro_expert", route["steps"])
+        self.assertIn("run_industry_researcher_expert", route["steps"])
+        self.assertIn("run_event_hunter_expert", route["steps"])
+        self.assertIn("run_expert_identifier_agent", route["steps"])
+
     def test_should_enable_agent_team_for_multi_stock_request(self):
         decision = should_use_agent_team("请分析中国能建和首开股份，给我短线建议")
         self.assertTrue(decision["use_team"])
@@ -341,6 +349,32 @@ class TestStockSkill(unittest.TestCase):
         report = parse_search_results_to_report(search_data, "600000")
         self.assertEqual(report["price_info"].get("price"), "4.85")
 
+    def test_price_should_reject_non_same_day_close_semantic(self):
+        search_data = [
+            {
+                "title": "股价播报",
+                "snippet": "收盘价10.20元，更新时间2026-03-09 15:00，成交额2.3亿元",
+                "link": "https://www.sse.com.cn/marketdata",
+                "timestamp": "2026-03-09 15:00",
+            }
+        ]
+        report = parse_search_results_to_report(search_data, "600000", request_date="2026-03-10")
+        self.assertNotIn("price", report.get("price_info", {}))
+        self.assertEqual(len(report.get("price_semantic_records", [])), 0)
+
+    def test_price_should_accept_same_day_close_semantic(self):
+        search_data = [
+            {
+                "title": "股价播报",
+                "snippet": "今日收盘10.20元，更新时间2026-03-10 15:00，成交额2.3亿元",
+                "link": "https://www.sse.com.cn/marketdata",
+                "timestamp": "2026-03-10 15:00",
+            }
+        ]
+        report = parse_search_results_to_report(search_data, "600000", request_date="2026-03-10")
+        self.assertEqual(report.get("price_info", {}).get("price"), "10.20")
+        self.assertGreaterEqual(len(report.get("price_semantic_records", [])), 1)
+
     def test_shortline_signals_should_extract_vwap_volume_ratio_and_atr_stop(self):
         search_data = [
             {
@@ -420,6 +454,25 @@ class TestStockSkill(unittest.TestCase):
         self.assertTrue(gate.get("identity_passed"))
         self.assertNotIn("IDENTITY_CODE_NAME_MISMATCH", gate.get("failed_reason_codes", []))
 
+    def test_identity_should_reject_ambiguous_adjacent_bindings(self):
+        search_data = [
+            {
+                "title": "盘口异动",
+                "snippet": "浦发银行600000招商银行 最新价10.20元/股，更新时间2026-03-10 10:05",
+                "link": "https://www.yicai.com/news/stock",
+                "timestamp": "2026-03-10 10:05",
+            },
+            {
+                "title": "交易所播报",
+                "snippet": "浦发银行(600000) 最新价10.22元/股，更新时间2026-03-10 10:06",
+                "link": "https://www.sse.com.cn/marketdata",
+                "timestamp": "2026-03-10 10:06",
+            },
+        ]
+        report = parse_search_results_to_report(search_data, "600000", stock_name="浦发银行")
+        ambiguous_hit = [m for m in report.get("identity_mentions", []) if m.get("source_title") == "盘口异动"]
+        self.assertEqual(len(ambiguous_hit), 0)
+
     def test_data_audit_should_require_resample_when_date_rolls_back(self):
         search_data = self._build_multi_source_core_data(
             ["2026-03-10 09:30", "2026-03-10 09:40", "2026-03-10 10:00"]
@@ -483,6 +536,19 @@ class TestStockSkill(unittest.TestCase):
         self.assertFalse(gate.get("passed"))
         reasons = " ".join(gate.get("downgrade_reasons", []))
         self.assertIn("来源类别不足", reasons)
+
+    def test_data_audit_should_downgrade_when_timestamp_missing_and_keep_news_timestamp_na(self):
+        search_data = self._build_multi_source_core_data(
+            ["", "2026-03-10 09:35", "2026-03-10 09:45"]
+        )
+        report = parse_search_results_to_report(search_data, "600000", request_date="2026-03-10")
+        gate = report.get("audit_gate", {})
+        reasons = " ".join(gate.get("downgrade_reasons", []))
+        self.assertFalse(gate.get("passed"))
+        self.assertTrue(gate.get("require_resample"))
+        self.assertIn("缺失时间戳", reasons)
+        self.assertEqual(report.get("news", [])[0].get("timestamp"), "N/A")
+        self.assertEqual(report.get("shortline_signals", {}).get("audit_downgraded"), "true")
 
     def test_markdown_should_render_audit_downgrade_and_resample_reason(self):
         payload = {
@@ -1156,6 +1222,17 @@ class TestStockSkill(unittest.TestCase):
         request_payload = parsed.get("request_payload", {})
         self.assertIn("apikey", request_payload)
         self.assertNotEqual(request_payload["apikey"], "REAL_API_KEY_001")
+
+    def test_normalize_stock_name_should_keep_st_prefix_by_default(self):
+        self.assertEqual(su.normalize_stock_name("ST中珠"), "ST中珠")
+        self.assertEqual(su.normalize_stock_name(" *ST中珠 "), "ST中珠")
+
+    def test_normalize_stock_name_should_map_alias_even_with_st_prefix(self):
+        self.assertEqual(su.normalize_stock_name("ST上海浦东发展银行"), "浦发银行")
+        self.assertEqual(su.normalize_stock_name("ＳＴ浦发"), "浦发银行")
+
+    def test_is_stock_name_alias_should_support_st_prefixed_alias_mapping(self):
+        self.assertTrue(su.is_stock_name_alias("ST上海浦东发展银行", "浦发银行"))
 
 
 if __name__ == "__main__":

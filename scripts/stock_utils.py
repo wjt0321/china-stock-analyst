@@ -658,12 +658,13 @@ def normalize_stock_name(name: str) -> str:
     normalized = _compact_name_text(raw)
     normalized = _strip_company_suffix(normalized)
     normalized = normalized.replace("*ST", "ST").replace("ＳＴ", "ST")
+    match_candidates = {normalized}
     if normalized.upper().startswith("ST"):
-        normalized = normalized[2:]
+        match_candidates.add(normalized[2:])
     for canonical, aliases in STOCK_NAME_ALIAS_MAP.items():
         candidates = [canonical, *aliases]
         normalized_candidates = {_strip_company_suffix(_compact_name_text(item)) for item in candidates}
-        if normalized in normalized_candidates:
+        if any(candidate in normalized_candidates for candidate in match_candidates):
             return canonical
     return normalized
 
