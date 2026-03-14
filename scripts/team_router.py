@@ -243,7 +243,7 @@ def build_shortline_supervisor_rules() -> dict:
 
 
 def resolve_preconfigured_expert_agents() -> dict:
-    agents_root = Path(__file__).resolve().parents[3] / "agents"
+    agents_root = Path(__file__).resolve().parent.parent / "agents"
     registry = {}
     for step, agent_name in PRECONFIGURED_EXPERT_AGENTS.items():
         agent_file = agents_root / f"{agent_name}.md"

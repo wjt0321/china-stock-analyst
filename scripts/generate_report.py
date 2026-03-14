@@ -274,8 +274,42 @@ def _parse_financial(snippet: str) -> dict:
     qoq_match = re.search(r'环比(?:增长|下降)?\s*([+-]?[0-9]+\.?[0-9]*)\s*%', snippet)
     if qoq_match:
         parsed['qoq'] = f"{float(qoq_match.group(1)):.2f}"
-    parsed['as_of'] = datetime.now().strftime('%Y-%m-%d')
+    # 优先从 snippet 提取财报期（避免用今天覆盖财报实际报告期）
+    as_of_extracted = _extract_financial_report_date(snippet)
+    if as_of_extracted:
+        parsed['as_of'] = as_of_extracted
+        parsed['as_of_source'] = 'extracted'
+    else:
+        parsed['as_of'] = datetime.now().strftime('%Y-%m-%d')
+        parsed['as_of_source'] = 'fallback_today'  # 无法从文本确认报告期，以当日作为兜底
     return parsed
+
+
+def _extract_financial_report_date(snippet: str) -> str:
+    """从财务文本中提取报告期日期，支持季报/年报/半年报/Qx 格式"""
+    # 格式1：2025年三季报、2024年年报
+    m = re.search(r'(20\d{2})年(一季报|半年报|三季报|年报|一季度|二季度|三季度|四季度)', snippet)
+    if m:
+        year = int(m.group(1))
+        period = m.group(2)
+        period_date_map = {
+            '一季报': f'{year}-03-31', '一季度': f'{year}-03-31',
+            '半年报': f'{year}-06-30', '二季度': f'{year}-06-30',
+            '三季报': f'{year}-09-30', '三季度': f'{year}-09-30',
+            '年报':   f'{year}-12-31', '四季度': f'{year}-12-31',
+        }
+        return period_date_map.get(period, '')
+    # 格式2：2024Q1、2024Q4
+    m2 = re.search(r'(20\d{2})[年\-]?[Qq]([1-4])', snippet)
+    if m2:
+        year, quarter = int(m2.group(1)), int(m2.group(2))
+        q_end = {1: '03-31', 2: '06-30', 3: '09-30', 4: '12-31'}
+        return f'{year}-{q_end[quarter]}'
+    # 格式3：2025-03-31 或 2025年03月31日
+    m3 = re.search(r'(20\d{2})[-年](\d{1,2})[-月](\d{1,2})', snippet)
+    if m3:
+        return f'{m3.group(1)}-{int(m3.group(2)):02d}-{int(m3.group(3)):02d}'
+    return ''
 
 
 def _contains_shortline_indicator(snippet: str, title: str) -> bool:

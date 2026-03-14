@@ -109,7 +109,7 @@ description: A股短线营收分析助手，聚焦“短线交易信号 + 营收
 |------|----------|----------|----------|----------|
 | VWAP偏离 | 分时价格、成交额、成交量 | \|偏离\|>=2.0%触发强提醒 | `scripts/generate_report.py::_generate_minimal_shortline_recommendation` | 综合结论/短线信号确认 |
 | ATR止损 | 近14日高低收 | 止损=当前价-1.5*ATR | `scripts/generate_report.py::_generate_minimal_shortline_recommendation` | 操作建议/止损价 |
-| 量比 | 即时成交量、5日均量 | 量比>=1.8且上破压力位 | `scripts/generate_report.py::_generate_minimal_shortline_recommendation` | 技术分析派/触发确认 |
+| 量比 | 即时成交量、5日均量 | 量比>=1.8且上破压力位（**⚠️ 量比为实时计算指标，搜索结果时效>15min时须标注"量比数据可能延迟，置信度降至中"**）| `scripts/generate_report.py::_generate_minimal_shortline_recommendation` | 技术分析派/触发确认 |
 
 ### 建议补充
 
@@ -168,7 +168,7 @@ description: A股短线营收分析助手，聚焦“短线交易信号 + 营收
 | 08 | 专家鉴别Agent | 质量门控与一致性校验 | 专家身份、标的一致性、价格锚点偏差 |
 
 #### 预置专家 Agent 调用规则
-- 优先从 `c:\Users\Administrator\.claude\agents` 读取专家 Agent
+- 优先从技能根目录的 `agents/` 目录读取专家 Agent（脚本通过 `Path(__file__).parent.parent / "agents"` 自动解析）
 - 推荐映射：
   - `run_data_auditor` → `stock-data-auditor`
   - `run_fundamental_expert` → `stock-fundamental-expert`
@@ -465,3 +465,15 @@ description: A股短线营收分析助手，聚焦“短线交易信号 + 营收
 
 - 运行 `python -m unittest tests/test_stock_skill.py`
 - 用单票与双票 payload 各生成一次报告，确认模板切换和反转预警可用
+
+### 测试覆盖范围（`tests/test_stock_skill.py`）
+
+| 测试类 | 覆盖内容 |
+|--------|----------|
+| `TestTeamRouter` | 路由判定、多标的检测、高意图链路、东财意图分类 |
+| `TestDataAuditor` | 数据审计、时间戳冲突、来源类别充分性 |
+| `TestExpertIdentityGate` | 身份校验、价格锚点偏差、阻断机制 |
+| `TestSentimentGovernance` | 舆情去重、质量评分、情绪分类 |
+| `TestEastmoneyIntegration` | API Key 读取、意图路由、门控判定 |
+
+建议在修改 `team_router.py`、`generate_report.py` 或新增 Agent 后回归全量测试。

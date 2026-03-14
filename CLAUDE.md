@@ -185,8 +185,8 @@ run_expert_identifier_agent → supervisor_review → render_report
 ### 配置方式
 
 1. 复制 `.env.example` 为 `.env.local`
-2. 填入自己的 `EASTMONEY_APIKEY`（需自行申请）
-3. 或设置环境变量 `EASTMONEY_APIKEY`
+2. 填入自己的 `EASTMONEY_API_KEY`（需自行申请）
+3. 或设置环境变量 `EASTMONEY_API_KEY`
 
 **配额限制**：50 次/日，由 `stock_utils.consume_eastmoney_daily_quota()` 控制
 
