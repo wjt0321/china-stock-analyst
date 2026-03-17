@@ -83,7 +83,7 @@ EASTMONEY_ENDPOINT_STOCK_SCREEN=/stock-screen
 
 ---
 
-## Data Integration Details (v2.4.0)
+## Data Integration Details (v2.4.2)
 
 ### Why this integration
 
@@ -272,6 +272,19 @@ This project is licensed under the **MIT License**. See [LICENSE](LICENSE) for d
 ---
 
 ## Changelog
+
+### v2.4.2 (2026-03-17)
+
+- Release/Tag: `2.4.2`
+- **Added front-loaded data gates to improve data accuracy**
+  - Before conclusion generation, the pipeline now enforces three hard gates: code-name consistency, price validity, and trading-day timeliness
+  - Any gate failure blocks downstream analysis and prevents recommendation output with misleading risk
+  - On block, the system returns structured repair guidance (reason codes + actionable fixes) for quick recollection and verification
+- **Gate execution moved earlier in the pipeline**
+  - Fixed right after `run_data_auditor` and before expert conclusion aggregation, ensuring all downstream reasoning uses validated data
+- **Report traceability enhanced**
+  - The “Data Authenticity Verification / Data Source Metadata” sections now display gate conclusions, reason codes, and repair guidance
+- Regression tests passed: **95/95**
 
 ### v2.4.1 (2026-03-17)
 

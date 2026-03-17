@@ -19,7 +19,7 @@ python -m unittest tests.test_stock_skill.TestStockSkill.test_should_enable_agen
 python -m unittest tests.test_stock_skill.TestStockSkill -v
 ```
 
-测试覆盖范围：路由判定、数据审计、专家鉴别、舆情治理、东方财富 API 集成。
+测试覆盖范围：路由判定、数据审计、专家鉴别、舆情治理、东方财富 API 集成。当前回归测试：95 项全部通过。
 
 ## 目录结构
 
@@ -212,6 +212,9 @@ run_expert_identifier_agent → supervisor_review → render_report
 | `scripts/team_router.py` | 模式路由：`should_use_agent_team()`, `build_skill_chain_plan()`, `route_eastmoney_intent()` |
 | `scripts/generate_report.py` | 报告生成：`plan_analysis_route()`, `parse_search_results_to_report()`, `_generate_advice()` |
 | `scripts/stock_utils.py` | 股票验证、时间戳处理、东方财富 API 封装、短线指标定义 |
+| `scripts/report_quality_gate.py` | 报告质量门禁：价格一致性、时间锚点、证据链完整性校验 |
+| `scripts/run_report_quality_checks.py` | 批量报告质量检查入口脚本 |
 | `agents/*.md` | 预配置专家 Agent 定义（优先加载，缺失时回退默认） |
 | `assets/报告模板.md` | Obsidian Callout 格式模板 |
 | `docs/agent-teams-blueprint.md` | Agent Teams 编排蓝图：角色定义、输出 schema、裁决规则 |
+| `docs/agent-json-schema-standard.md` | 专家 Agent 统一 JSON Schema 标准（v2），约束输出格式与证据结构 |
