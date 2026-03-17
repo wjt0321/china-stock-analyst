@@ -1,5 +1,6 @@
 import re
 import sys
+import os
 import tempfile
 import unittest
 import importlib
@@ -1580,7 +1581,9 @@ class TestStockSkill(unittest.TestCase):
                 "total": 2,
             },
         }
-        with mock.patch.object(su, "query_akshare_securities", return_value=fake_result):
+        with mock.patch.object(su, "_load_akshare_module", return_value=object()), mock.patch.object(
+            su, "query_akshare_securities", return_value=fake_result
+        ):
             result = su.query_akshare_quote("600000")
         self.assertTrue(result.get("success"))
         self.assertEqual(result.get("data", {}).get("quote", {}).get("symbol"), "600000")
@@ -1589,6 +1592,88 @@ class TestStockSkill(unittest.TestCase):
         self.assertEqual(standardized.get("symbol"), "600000")
         self.assertEqual(standardized.get("name"), "浦发银行")
         self.assertEqual(standardized.get("price"), 10.11)
+
+    def test_akshare_securities_should_clear_proxy_env_when_proxy_disabled(self):
+        original_http_proxy = os.getenv("HTTP_PROXY")
+        original_https_proxy = os.getenv("HTTPS_PROXY")
+
+        class _FakeFrame:
+            def to_dict(self, orient):
+                self._ = orient
+                return [{"代码": "600000", "名称": "浦发银行", "最新价": "10.21"}]
+
+        class _FakeAk:
+            @staticmethod
+            def stock_zh_a_spot_em():
+                return _FakeFrame()
+
+        with mock.patch.dict(
+            "os.environ",
+            {"HTTP_PROXY": "http://127.0.0.1:10808", "HTTPS_PROXY": "http://127.0.0.1:10808", "AKSHARE_USE_PROXY": "0"},
+            clear=False,
+        ), mock.patch.object(su, "_load_akshare_module", return_value=_FakeAk()):
+            result = su.query_akshare_securities(keyword="600000", limit=1)
+        self.assertTrue(result.get("success"))
+        self.assertEqual(os.getenv("HTTP_PROXY"), original_http_proxy)
+        self.assertEqual(os.getenv("HTTPS_PROXY"), original_https_proxy)
+
+    def test_akshare_quote_should_prefer_bid_ask_endpoint_when_available(self):
+        class _FakeFrame:
+            def to_dict(self, orient):
+                self._ = orient
+                return [
+                    {"item": "名称", "value": "浦发银行"},
+                    {"item": "最新", "value": "10.35"},
+                    {"item": "涨跌幅", "value": "1.23"},
+                    {"item": "时间", "value": "2026-03-17 10:35:00"},
+                ]
+
+        class _FakeAk:
+            @staticmethod
+            def stock_bid_ask_em(symbol):
+                if symbol == "600000":
+                    return _FakeFrame()
+                return _FakeFrame()
+
+        with mock.patch.object(su, "_load_akshare_module", return_value=_FakeAk()):
+            result = su.query_akshare_quote("600000")
+        self.assertTrue(result.get("success"))
+        self.assertEqual(result.get("meta", {}).get("endpoint"), "stock_bid_ask_em")
+        self.assertEqual(result.get("data", {}).get("quote", {}).get("symbol"), "600000")
+        self.assertEqual(result.get("data", {}).get("standardized", {}).get("price"), 10.35)
+
+    def test_akshare_error_classifier_should_identify_remote_disconnected(self):
+        error_type = su._classify_akshare_exception(RuntimeError("Remote end closed connection without response"))
+        self.assertEqual(error_type, "REMOTE_DISCONNECTED")
+
+    def test_akshare_call_with_retries_should_retry_then_succeed(self):
+        state = {"count": 0}
+
+        def _flaky():
+            state["count"] += 1
+            if state["count"] < 3:
+                raise RuntimeError("temporary timeout")
+            return "ok"
+
+        with mock.patch.object(su, "AKSHARE_RETRY_BACKOFF_SECONDS", 0):
+            result = su._call_akshare_with_retries(_flaky, retries=3)
+        self.assertEqual(result, "ok")
+        self.assertEqual(state["count"], 3)
+
+    def test_akshare_securities_should_return_error_type_when_network_failed(self):
+        class _FakeAk:
+            @staticmethod
+            def stock_zh_a_spot_em():
+                raise RuntimeError("Remote end closed connection without response")
+
+        with mock.patch.object(su, "_load_akshare_module", return_value=_FakeAk()), mock.patch.object(
+            su, "AKSHARE_RETRY_BACKOFF_SECONDS", 0
+        ):
+            result = su.query_akshare_securities(keyword="600000", limit=1)
+        self.assertFalse(result.get("success"))
+        self.assertEqual(result.get("error", {}).get("code"), su.STANDARD_ERROR_CODE_AKSHARE_API_ERROR)
+        details = result.get("error", {}).get("details", {})
+        self.assertEqual(details.get("error_type"), "REMOTE_DISCONNECTED")
 
 
 if __name__ == "__main__":

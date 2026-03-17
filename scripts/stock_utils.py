@@ -8,6 +8,8 @@ import logging
 import os
 import re
 import threading
+import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -68,6 +70,19 @@ EASTMONEY_STOCK_SCREEN_COLUMN_MAP = {
 }
 
 AKSHARE_MODULE_NAME = "akshare"
+AKSHARE_USE_PROXY_ENV = "AKSHARE_USE_PROXY"
+AKSHARE_MAX_RETRIES_ENV = "AKSHARE_MAX_RETRIES"
+AKSHARE_RETRY_BACKOFF_ENV = "AKSHARE_RETRY_BACKOFF_SECONDS"
+AKSHARE_PROXY_ENV_KEYS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+)
+AKSHARE_MAX_RETRIES = max(int(os.getenv(AKSHARE_MAX_RETRIES_ENV, "3") or 3), 1)
+AKSHARE_RETRY_BACKOFF_SECONDS = max(float(os.getenv(AKSHARE_RETRY_BACKOFF_ENV, "0.8") or 0.8), 0.0)
 STANDARD_ERROR_CODE_INVALID_ARGUMENT = "INVALID_ARGUMENT"
 STANDARD_ERROR_CODE_AKSHARE_NOT_INSTALLED = "AKSHARE_NOT_INSTALLED"
 STANDARD_ERROR_CODE_AKSHARE_API_ERROR = "AKSHARE_API_ERROR"
@@ -209,6 +224,64 @@ def _load_akshare_module() -> Any:
         return None
 
 
+def _is_akshare_proxy_enabled() -> bool:
+    raw = str(os.getenv(AKSHARE_USE_PROXY_ENV, "0") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+@contextmanager
+def _akshare_network_context():
+    if _is_akshare_proxy_enabled():
+        yield
+        return
+    snapshots = {key: os.environ.get(key) for key in AKSHARE_PROXY_ENV_KEYS}
+    try:
+        for key in AKSHARE_PROXY_ENV_KEYS:
+            os.environ.pop(key, None)
+        yield
+    finally:
+        for key, value in snapshots.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _classify_akshare_exception(error: Exception) -> str:
+    text = str(error or "").lower()
+    if "proxyerror" in text or "unable to connect to proxy" in text or "winerror 10061" in text:
+        return "PROXY_UNAVAILABLE"
+    if "remotedisconnected" in text or "remote end closed connection" in text:
+        return "REMOTE_DISCONNECTED"
+    if "name or service not known" in text or "gaierror" in text:
+        return "DNS_ERROR"
+    if "timed out" in text or "timeout" in text:
+        return "TIMEOUT"
+    if "ssl" in text or "tls" in text:
+        return "TLS_ERROR"
+    if "connection aborted" in text or "connection reset" in text:
+        return "CONNECTION_ABORTED"
+    return "NETWORK_ERROR"
+
+
+def _call_akshare_with_retries(fn, retries: int = AKSHARE_MAX_RETRIES):
+    attempts = max(int(retries or 1), 1)
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as error:
+            last_error = error
+            if attempt >= attempts:
+                raise
+            wait_seconds = AKSHARE_RETRY_BACKOFF_SECONDS * attempt
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
+    if last_error:
+        raise last_error
+    raise RuntimeError("AKShare 调用失败")
+
+
 def _normalize_market(value: Any) -> str:
     text = str(value or "").upper()
     if text in ("SH", "SSE", "1"):
@@ -288,6 +361,59 @@ def _filter_security_records(records: list, keyword: str, limit: int) -> list:
     return result
 
 
+def _extract_bid_ask_mapped_row(records: list) -> dict:
+    items = [item for item in (records or []) if isinstance(item, dict)]
+    if not items:
+        return {}
+    if all("item" in row and "value" in row for row in items):
+        mapped = {}
+        for row in items:
+            key = str(row.get("item") or "").strip()
+            if not key:
+                continue
+            mapped[key] = row.get("value")
+        return mapped
+    return items[0]
+
+
+def _build_quote_from_bid_ask(records: list, symbol: str) -> dict:
+    row = _extract_bid_ask_mapped_row(records)
+    if not row:
+        return {}
+    last_price = _safe_number(
+        _get_value_by_alias(row, ["最新", "最新价", "现价", "最新价格", "price", "last_price"], "")
+    )
+    if last_price in (None, ""):
+        return {}
+    trade_date = _normalize_trade_date_text(
+        _get_value_by_alias(row, ["交易日期", "交易日", "日期", "更新时间", "time", "date"], "")
+    )
+    return {
+        "symbol": symbol,
+        "name": str(_get_value_by_alias(row, ["名称", "股票名称", "name", "stock_name"], "") or "").strip(),
+        "market": _normalize_market(_get_value_by_alias(row, ["市场", "market"], "")),
+        "trade_date": trade_date,
+        "last_price": last_price,
+        "change_percent": _safe_number(_get_value_by_alias(row, ["涨跌幅", "change_percent", "pct_chg"], "")),
+    }
+
+
+def _query_akshare_quote_direct(ak: Any, symbol: str) -> tuple[dict, dict]:
+    if not hasattr(ak, "stock_bid_ask_em"):
+        return {}, {}
+    def _fetch_bid_ask():
+        with _akshare_network_context():
+            return ak.stock_bid_ask_em(symbol=symbol)
+
+    raw = _call_akshare_with_retries(_fetch_bid_ask)
+    records = _safe_records(raw)
+    quote = _build_quote_from_bid_ask(records, symbol=symbol)
+    if not quote:
+        return {}, {}
+    meta = {"provider": AKSHARE_MODULE_NAME, "endpoint": "stock_bid_ask_em"}
+    return quote, meta
+
+
 def query_akshare_securities(keyword: str = "", limit: int = 20) -> dict:
     normalized_limit = 20 if limit is None else int(limit)
     if normalized_limit <= 0:
@@ -304,7 +430,11 @@ def query_akshare_securities(keyword: str = "", limit: int = 20) -> dict:
             retryable=False,
         )
     try:
-        raw = ak.stock_zh_a_spot_em()
+        def _fetch_spot():
+            with _akshare_network_context():
+                return ak.stock_zh_a_spot_em()
+
+        raw = _call_akshare_with_retries(_fetch_spot)
         records = _safe_records(raw)
         if not records:
             return _build_standard_error(
@@ -333,11 +463,17 @@ def query_akshare_securities(keyword: str = "", limit: int = 20) -> dict:
             meta={"provider": AKSHARE_MODULE_NAME},
         )
     except Exception as error:
+        error_type = _classify_akshare_exception(error)
         return _build_standard_error(
             code=STANDARD_ERROR_CODE_AKSHARE_API_ERROR,
             message="AKShare 证券查询失败",
             retryable=True,
-            details={"error": str(error), "keyword": keyword},
+            details={
+                "error": str(error),
+                "error_type": error_type,
+                "keyword": keyword,
+                "max_retries": AKSHARE_MAX_RETRIES,
+            },
             meta={"provider": AKSHARE_MODULE_NAME},
         )
 
@@ -350,6 +486,28 @@ def query_akshare_quote(symbol: str) -> dict:
             message="symbol 必须是合法 A 股 6 位代码",
             details={"symbol": symbol},
         )
+    ak = _load_akshare_module()
+    if ak is None:
+        return _build_standard_error(
+            code=STANDARD_ERROR_CODE_AKSHARE_NOT_INSTALLED,
+            message="未安装 AKShare，请先执行 `pip install akshare`",
+            retryable=False,
+        )
+    try:
+        direct_quote, direct_meta = _query_akshare_quote_direct(ak, normalized_symbol)
+        if direct_quote:
+            standardized = {
+                "symbol": direct_quote.get("symbol", normalized_symbol),
+                "name": direct_quote.get("name", ""),
+                "price": direct_quote.get("last_price", ""),
+                "trade_date": direct_quote.get("trade_date", ""),
+            }
+            return _build_standard_result(
+                data={"quote": direct_quote, "standardized": standardized},
+                meta=direct_meta,
+            )
+    except Exception:
+        pass
     result = query_akshare_securities(keyword=normalized_symbol, limit=1)
     if not result.get("success"):
         return result
