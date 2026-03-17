@@ -5,7 +5,13 @@ import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-from stock_utils import query_akshare_quote, validate_stock_code
+from stock_utils import (
+    is_stock_name_alias,
+    normalize_stock_name,
+    query_akshare_quote,
+    query_akshare_securities,
+    validate_stock_code,
+)
 
 
 TEAM_TRIGGER_KEYWORDS = [
@@ -277,10 +283,14 @@ def route_eastmoney_intent(user_request: str, stock_code: str = "", stock_name: 
     route = _classify_eastmoney_intent(normalized)
     gate = _build_critical_gate(route, normalized, stock_code=stock_code, stock_name=stock_name)
     cache_result = _apply_intent_cache(route, gate, normalized)
-    resolved_code = _resolve_stock_code_for_router(stock_code, request)
-    akshare_passthrough = _build_akshare_passthrough_meta(resolved_code, stock_name)
+    resolved_identity = _resolve_stock_identity_for_router(stock_code, stock_name, request)
+    akshare_passthrough = _build_akshare_passthrough_meta(
+        resolved_identity.get("stock_code", ""),
+        resolved_identity.get("stock_name", ""),
+    )
+    akshare_passthrough["symbol_resolved_via"] = resolved_identity.get("resolution_source", "")
+    akshare_passthrough["resolution_trace"] = resolved_identity.get("resolution_trace", [])
     if not akshare_passthrough.get("validation_passed", True):
-        gate["passed"] = False if gate.get("blocked_by_guardrail") else gate.get("passed", True)
         if akshare_passthrough.get("failure_code"):
             _append_guardrail_failure(
                 gate,
@@ -290,7 +300,6 @@ def route_eastmoney_intent(user_request: str, stock_code: str = "", stock_name: 
     fallback_mode = (
         gate.get("blocked_by_guardrail")
         or route.get("intent_category", "none") == "none"
-        or (not akshare_passthrough.get("validation_passed", True))
     )
     route_result = {
         "request": request,
@@ -504,6 +513,70 @@ def _resolve_stock_code_for_router(stock_code: str, request: str) -> str:
         return explicit
     matched = re.findall(r"(?<!\d)[036]\d{5}(?!\d)", request or "")
     return matched[0] if matched else ""
+
+
+def _resolve_stock_identity_for_router(stock_code: str, stock_name: str, request: str) -> dict:
+    resolved_code = _resolve_stock_code_for_router(stock_code, request)
+    normalized_name = normalize_stock_name(stock_name) if stock_name else ""
+    trace = []
+    if resolved_code:
+        trace.append("explicit_or_regex_code")
+        return {
+            "stock_code": resolved_code,
+            "stock_name": normalized_name or (stock_name or "").strip(),
+            "resolution_source": "code",
+            "resolution_trace": trace,
+        }
+    if not normalized_name:
+        trace.append("missing_name")
+        return {
+            "stock_code": "",
+            "stock_name": "",
+            "resolution_source": "",
+            "resolution_trace": trace,
+        }
+    trace.append("resolve_by_akshare_securities")
+    result = query_akshare_securities(keyword=normalized_name, limit=20)
+    if not result.get("success"):
+        trace.append(f"akshare_securities_failed:{((result.get('error') or {}).get('code', 'unknown'))}")
+        return {
+            "stock_code": "",
+            "stock_name": normalized_name,
+            "resolution_source": "name",
+            "resolution_trace": trace,
+        }
+    items = ((result.get("data") or {}).get("items") or [])
+    for item in items:
+        candidate_code = str(item.get("symbol") or "").strip()
+        candidate_name = str(item.get("name") or "").strip()
+        if not validate_stock_code(candidate_code):
+            continue
+        if is_stock_name_alias(candidate_name, normalized_name):
+            trace.append("resolved_by_alias_match")
+            return {
+                "stock_code": candidate_code,
+                "stock_name": normalize_stock_name(candidate_name) or normalized_name,
+                "resolution_source": "name",
+                "resolution_trace": trace,
+            }
+    first_item = items[0] if items else {}
+    first_code = str(first_item.get("symbol") or "").strip()
+    first_name = str(first_item.get("name") or "").strip()
+    if validate_stock_code(first_code):
+        trace.append("resolved_by_first_candidate")
+        return {
+            "stock_code": first_code,
+            "stock_name": normalize_stock_name(first_name) or normalized_name,
+            "resolution_source": "name",
+            "resolution_trace": trace,
+        }
+    trace.append("name_resolve_failed")
+    return {
+        "stock_code": "",
+        "stock_name": normalized_name,
+        "resolution_source": "name",
+        "resolution_trace": trace,
+    }
 
 
 def _build_akshare_passthrough_meta(stock_code: str, stock_name: str = "") -> dict:

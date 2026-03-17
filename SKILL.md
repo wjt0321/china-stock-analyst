@@ -140,12 +140,17 @@ description: A股短线营收分析助手，聚焦“短线交易信号 + 营收
 ## 分析流程
 
 ### 第一步：获取数据
-使用 Web Search 工具获取最新数据（优先可用的搜索工具；若 `mcp__MiniMax__web_search` 不可用，自动切换到当前环境可用的 Web Search）：
-- 实时行情、价格涨跌幅
-- 资金流向（主力/散户）
-- 业绩预告、财务数据（营业收入、同比、环比）
-- 行业政策、板块走势
-- **重要**：近5日资金流向、近期支撑/压力位、最近一期营收口径
+按“结构化主数据优先，搜索资讯补充”执行，不得反向：
+
+1. **AKShare 主路径（必须优先）**
+   - 优先通过 `scripts/stock_utils.py::query_akshare_quote` 获取 `symbol/name/price/trade_date` 关键字段
+   - 用户仅提供股票名称时，先走 `query_akshare_securities` 解析股票代码，再继续 `query_akshare_quote`
+2. **东方财富 Query 次路径（AKShare 不可用时）**
+   - 仅用于补齐 AKShare 缺失字段，禁止覆盖 AKShare 已有关键字段
+3. **Web Search 仅资讯补充（最低优先级）**
+   - 仅用于新闻、公告、舆情、产业事件与背景说明，不作为关键行情字段主来源
+
+关键字段来源优先级固定为：`akshare > eastmoney_query > web_search`
 
 #### 数据提取原则
 - 搜索行情时优先包含“股票名称 + 股票代码 + 最新价”关键词组合

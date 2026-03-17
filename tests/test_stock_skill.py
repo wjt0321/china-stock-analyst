@@ -150,14 +150,59 @@ class TestStockSkill(unittest.TestCase):
         self.assertEqual(gate.get("fallback_action"), "use_local_analysis_only")
         self.assertIn("INTENT_NOT_MATCHED", gate.get("reason_codes", []))
 
-    def test_eastmoney_router_should_flag_target_mismatch_and_enter_fallback_mode(self):
+    def test_eastmoney_router_should_resolve_stock_name_via_akshare_and_keep_external_route(self):
         self._clear_team_router_runtime_state()
-        routed = tr.route_eastmoney_intent("请查询浦发银行资金流向", stock_name="浦发银行")
+        with mock.patch.object(
+            tr,
+            "query_akshare_securities",
+            return_value={
+                "success": True,
+                "data": {"items": [{"symbol": "600000", "name": "浦发银行"}]},
+                "error": {},
+            },
+        ), mock.patch.object(
+            tr,
+            "query_akshare_quote",
+            return_value={
+                "success": True,
+                "data": {"quote": {"symbol": "600000", "name": "浦发银行", "last_price": 10.2}},
+                "error": {},
+                "meta": {"provider": "akshare"},
+            },
+        ):
+            routed = tr.route_eastmoney_intent("请查询浦发银行资金流向", stock_name="浦发银行")
+        gate = routed.get("critical_gate", {})
+        self.assertEqual(routed.get("intent_category"), "query")
+        self.assertTrue(gate.get("passed"))
+        self.assertFalse(routed.get("fallback_mode"))
+        self.assertEqual(routed.get("akshare_passthrough", {}).get("symbol"), "600000")
+        self.assertEqual(routed.get("akshare_passthrough", {}).get("symbol_resolved_via"), "name")
+
+    def test_eastmoney_router_should_not_force_fallback_when_akshare_metadata_unavailable(self):
+        self._clear_team_router_runtime_state()
+        with mock.patch.object(
+            tr,
+            "query_akshare_securities",
+            return_value={
+                "success": False,
+                "error": {"code": "AKSHARE_API_ERROR", "message": "network"},
+                "data": {},
+            },
+        ), mock.patch.object(
+            tr,
+            "query_akshare_quote",
+            return_value={
+                "success": False,
+                "error": {"code": "AKSHARE_NOT_INSTALLED", "message": "missing"},
+                "data": {},
+            },
+        ):
+            routed = tr.route_eastmoney_intent("请查询浦发银行资金流向", stock_name="浦发银行")
         gate = routed.get("critical_gate", {})
         self.assertEqual(routed.get("intent_category"), "query")
         self.assertTrue(gate.get("passed"))
         self.assertIn("AKSHARE_METADATA_UNAVAILABLE", gate.get("reason_codes", []))
-        self.assertTrue(routed.get("fallback_mode"))
+        self.assertFalse(routed.get("fallback_mode"))
 
     def test_eastmoney_router_cache_should_reset_when_previous_cache_expired(self):
         self._clear_team_router_runtime_state()
