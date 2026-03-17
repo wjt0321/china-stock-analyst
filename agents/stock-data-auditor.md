@@ -13,8 +13,22 @@ color: blue
 - 输出审计结论：通过/有条件通过/不通过
 - 不做交易建议，不替代其他专家角色
 
-输出结构：
-- 审计结论
-- 关键证据
-- 风险点
-- 后续建议（继续/降级/重采样）
+输出结构（JSON格式，字段名和枚举值严格遵守）：
+```json
+{
+  "schema_version": "v2",
+  "agent": "stock-data-auditor",
+  "audit_verdict": "pass|conditional_pass|fail",
+  "severity": "low|medium|high",
+  "failed_fields": ["price", "change_percent"],
+  "conflicts": [
+    {"field": "price", "conflict_type": "timestamp_conflict|source_conflict|value_conflict", "evidence": "冲突说明"}
+  ],
+  "key_evidences": [
+    {"field": "price", "value": "10.23", "source_url": "链接", "timestamp": "YYYY-MM-DD HH:MM"}
+  ],
+  "risk_points": ["风险点1", "风险点2"],
+  "next_action": "continue|downgrade|resample",
+  "user_tip": "用户提示"
+}
+```

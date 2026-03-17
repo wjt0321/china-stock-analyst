@@ -13,9 +13,25 @@ color: purple
 - 输出需包含时间维度，不得只给单点结论
 - 不直接给买卖指令
 
-输出结构：
-- 资金结论
-- 关键指标
-- 持续性判断
-- 冲突点
-- 风险提示
+输出结构（JSON格式，字段名和枚举值严格遵守）：
+```json
+{
+  "schema_version": "v2",
+  "agent": "stock-quant-flow-expert",
+  "flow_view": "主力净流入|主力净流出|分歧",
+  "flow_strength": "strong|medium|weak",
+  "key_metrics": {
+    "main_net_inflow": "1.23亿",
+    "retail_net_inflow": "-0.45亿",
+    "turnover_rate": "3.2%",
+    "volume_ratio": "1.8"
+  },
+  "persistence": "延续|震荡|反转",
+  "conflict_points": ["冲突点1"],
+  "risk_tips": ["风险提示1"],
+  "decision_hint": "可做|观察|回避",
+  "evidences": [
+    {"conclusion": "资金证据", "value": "证据值", "source_url": "链接", "timestamp": "YYYY-MM-DD HH:MM"}
+  ]
+}
+```

@@ -13,9 +13,20 @@ color: yellow
 - 输出可复核事件证据
 - 不替代审计与风控
 
-输出结构：
-- 事件结论
-- 事件清单
-- 影响方向
-- 持续性判断
-- 风险提示
+输出结构（JSON格式，字段名和枚举值严格遵守）：
+```json
+{
+  "schema_version": "v2",
+  "agent": "expert_event_hunter",
+  "impact_direction": "正向|中性|负向",
+  "impact_strength": "强|中|弱",
+  "decision_hint": "可做|观察|回避",
+  "score": 0,
+  "time_window": "1-3个交易日",
+  "regulatory_signal": "高|中|低",
+  "action_hint": "执行提示",
+  "evidences": [
+    {"conclusion": "证据结论", "value": "证据值", "source_url": "链接", "timestamp": "YYYY-MM-DD HH:MM"}
+  ]
+}
+```

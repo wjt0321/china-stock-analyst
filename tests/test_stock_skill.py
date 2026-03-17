@@ -477,6 +477,29 @@ class TestStockSkill(unittest.TestCase):
         self.assertEqual(identity_summary.get("canonical_code"), "600000")
         self.assertEqual(identity_summary.get("canonical_name"), "浦发银行")
 
+    def test_parse_report_should_include_debate_and_risk_judge(self):
+        search_data = [
+            {
+                "title": "行业景气扩产跟踪",
+                "snippet": "浦发银行(600000) 最新价10.20元 景气扩产 需求回暖 更新时间2026-03-10 10:00",
+                "link": "https://www.sse.com.cn/marketdata",
+                "timestamp": "2026-03-10 10:00",
+            },
+            {
+                "title": "监管问询与处罚提示",
+                "snippet": "浦发银行(600000) 监管问询 处罚 风险提示 最新价10.18元 更新时间2026-03-10 10:05",
+                "link": "https://www.yicai.com/news/stock",
+                "timestamp": "2026-03-10 10:05",
+            },
+        ]
+        report = parse_search_results_to_report(search_data, "600000", stock_name="浦发银行", request_date="2026-03-10")
+        self.assertIn("debate_state", report)
+        self.assertIn("risk_judge", report)
+        self.assertIn("data_quality_verdict", report)
+        self.assertGreaterEqual(len(report.get("debate_state", {}).get("open_claims", [])), 2)
+        self.assertIn(report.get("risk_judge", {}).get("verdict"), ("pass", "revise", "fail"))
+        self.assertIn(report.get("data_quality_verdict", {}).get("verdict"), ("high", "medium", "low"))
+
     def test_identity_gate_should_use_input_canonical_name_as_binding_anchor(self):
         search_data = [
             {
@@ -556,6 +579,8 @@ class TestStockSkill(unittest.TestCase):
         self.assertFalse(gate.get("passed"))
         reasons = " ".join(gate.get("downgrade_reasons", []))
         self.assertIn("多源时间戳冲突", reasons)
+        self.assertEqual(report.get("data_quality_verdict", {}).get("verdict"), "low")
+        self.assertEqual(report.get("risk_judge", {}).get("verdict"), "fail")
 
     def test_data_audit_should_not_mark_conflict_within_threshold(self):
         search_data = self._build_multi_source_core_data(
@@ -639,6 +664,43 @@ class TestStockSkill(unittest.TestCase):
         self.assertIn("数据真实性审计", content)
         self.assertIn("审计状态：未通过", content)
         self.assertIn("数据真实性审计未通过，需先重采再评估", content)
+
+    def test_markdown_should_append_machine_readable_verdict_blocks(self):
+        payload = {
+            "date": "2026-03-10",
+            "stocks": [
+                {
+                    "stock_code": "601868",
+                    "stock_name": "中国能建",
+                    "label": "观察",
+                    "scores": {"momentum": 85, "revenue": 75, "risk": 70},
+                    "risk_judge": {"verdict": "pass", "result_label_cap": "观察"},
+                    "data_quality_verdict": {"verdict": "medium", "score": 78},
+                }
+            ],
+        }
+        content = gr.format_obsidian_markdown_report(payload)
+        self.assertIn("<!-- VERDICT:", content)
+        self.assertIn("<!-- RISK_JUDGE:", content)
+        self.assertIn("<!-- DATA_QUALITY:", content)
+        self.assertNotIn("<!-- POOL_VERDICT:", content)
+        pool_content = gr.format_obsidian_markdown_report(
+            {
+                "date": "2026-03-10",
+                "stocks": [
+                    payload["stocks"][0],
+                    {
+                        "stock_code": "600000",
+                        "stock_name": "浦发银行",
+                        "label": "回避",
+                        "scores": {"momentum": 70, "revenue": 60, "risk": 40},
+                        "risk_judge": {"verdict": "fail", "result_label_cap": "回避"},
+                        "data_quality_verdict": {"verdict": "low", "score": 45},
+                    },
+                ],
+            }
+        )
+        self.assertIn("<!-- POOL_VERDICT:", pool_content)
 
     def test_shortline_recommendation_should_cap_label_when_signal_is_weak(self):
         recommendation = gr._generate_minimal_shortline_recommendation(
@@ -1207,6 +1269,70 @@ class TestStockSkill(unittest.TestCase):
         self.assertIn("主管裁决与冲突仲裁", content)
         self.assertIn("仲裁结论标签上限：回避", content)
 
+    def test_markdown_should_render_fundamental_expert_v2_output(self):
+        payload = {
+            "date": "2026-03-10",
+            "stocks": [
+                {
+                    "stock_code": "600000",
+                    "stock_name": "浦发银行",
+                    "label": "观察",
+                    "scores": {"momentum": 82, "revenue": 78, "risk": 74},
+                    "expert_outputs": {
+                        "fundamental_expert": {
+                            "schema_version": "v2",
+                            "agent": "stock-fundamental-expert",
+                            "summary": "营收与现金流改善，但估值修复仍需验证",
+                            "positive_evidences": ["营收同比增长12.5%"],
+                            "negative_evidences": ["短期利润弹性仍有限"],
+                            "risk_tip": "若需求回落则估值承压",
+                            "confidence": "中",
+                            "decision_hint": "观察",
+                            "evidences": [
+                                {
+                                    "conclusion": "营收增长",
+                                    "value": "12.5%",
+                                    "source_url": "https://www.cninfo.com.cn/new/disclosure",
+                                    "timestamp": "2026-03-10 10:20",
+                                }
+                            ],
+                        }
+                    },
+                }
+            ],
+        }
+        content = gr.format_obsidian_markdown_report(payload)
+        self.assertIn("基本面专家结论", content)
+        self.assertIn("营收与现金流改善", content)
+        self.assertIn("决策建议：观察", content)
+        self.assertIn("营收同比增长12.5%", content)
+
+    def test_markdown_should_compat_legacy_fundamental_output_and_map_decision_hint(self):
+        payload = {
+            "date": "2026-03-10",
+            "stocks": [
+                {
+                    "stock_code": "600000",
+                    "stock_name": "浦发银行",
+                    "label": "观察",
+                    "scores": {"momentum": 82, "revenue": 78, "risk": 74},
+                    "fundamental_expert_output": {
+                        "观点摘要": "资产负债结构稳定，短线中性偏谨慎",
+                        "正向证据": ["不良率控制稳定"],
+                        "反向证据": ["净息差改善有限"],
+                        "风险提示": "地产链波动可能拖累估值",
+                        "置信度": "中",
+                        "decision_hint": "看空",
+                    },
+                }
+            ],
+        }
+        content = gr.format_obsidian_markdown_report(payload)
+        self.assertIn("基本面专家结论", content)
+        self.assertIn("资产负债结构稳定", content)
+        self.assertIn("决策建议：回避", content)
+        self.assertIn("不良率控制稳定", content)
+
     def test_advice_should_identify_main_outflow(self):
         report = {"fund_flow": {"main": "-107.98"}, "price_info": {"change": "-1.2"}}
         advice = _generate_advice(report)
@@ -1503,6 +1629,10 @@ class TestStockSkill(unittest.TestCase):
         quality_summary = parsed.get("data_quality_summary", {})
         self.assertTrue(quality_summary.get("is_usable"))
         self.assertEqual(quality_summary.get("provider"), "eastmoney_query")
+        self.assertGreaterEqual(quality_summary.get("evidence_count", 0), 3)
+        self.assertFalse(quality_summary.get("has_field_conflict"))
+        self.assertEqual(parsed.get("field_conflict_summary", {}).get("has_conflict"), False)
+        self.assertGreaterEqual(len(parsed.get("data_evidences", [])), 3)
 
     def test_parse_query_should_keep_usable_when_only_optional_fields_missing(self):
         response = {"code": "0", "data": {"list": [{"price": 10.28, "change_percent": 1.8}]}}
@@ -1520,6 +1650,18 @@ class TestStockSkill(unittest.TestCase):
         self.assertEqual(standardized.get("trade_date"), datetime.now().strftime("%Y-%m-%d"))
         quality_summary = parsed.get("data_quality_summary", {})
         self.assertTrue(quality_summary.get("is_usable"))
+
+    def test_parse_query_should_mark_conflict_when_price_values_inconsistent(self):
+        response = {"code": "0", "data": {"list": [{"price": 9.91, "last_price": 10.21}]}}
+        parsed = su.parse_eastmoney_query_response(
+            response,
+            request_payload={"fields": ["price"]},
+        )
+        conflict_summary = parsed.get("field_conflict_summary", {})
+        self.assertTrue(conflict_summary.get("has_conflict"))
+        quality_summary = parsed.get("data_quality_summary", {})
+        self.assertFalse(quality_summary.get("is_usable"))
+        self.assertGreaterEqual(quality_summary.get("field_conflict_count", 0), 1)
 
     def test_normalize_stock_name_should_keep_st_prefix_by_default(self):
         self.assertEqual(su.normalize_stock_name("ST中珠"), "ST中珠")

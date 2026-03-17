@@ -1,3 +1,4 @@
+import json
 import re
 from datetime import datetime, timedelta
 from team_router import should_use_agent_team, build_skill_chain_plan
@@ -109,6 +110,9 @@ def parse_search_results_to_report(
             "next_action": "continue",
         },
         "supervisor_review": {},
+        "debate_state": {},
+        "risk_judge": {},
+        "data_quality_verdict": {},
     }
 
     for result in search_results:
@@ -158,8 +162,7 @@ def parse_search_results_to_report(
     report["audit_gate"] = _run_data_authenticity_audit(report, request_date=request_date)
     _apply_audit_downgrade(report)
     report["sentiment_governance"] = _govern_news_sentiment(report.get("news", []))
-    industry_output = _build_industry_research_output(report)
-    event_output = _build_event_hunter_output(report)
+    industry_output, event_output = _run_expert_round(report)
     report["expert_outputs"]["industry_researcher"] = industry_output
     report["expert_outputs"]["event_hunter"] = event_output
     identity_gate = _run_expert_identity_gate(report)
@@ -169,11 +172,52 @@ def parse_search_results_to_report(
     if identity_gate.get("require_block"):
         report["process_block"] = _build_process_block(identity_gate)
         report["supervisor_review"] = _build_blocked_supervisor_review(identity_gate)
+        report["debate_state"] = _build_debate_state(report, industry_output, event_output, report["supervisor_review"])
+        report["risk_judge"] = _build_risk_judge(report, report["debate_state"], report["supervisor_review"])
     else:
         report["supervisor_review"] = _run_supervisor_review(report, industry_output, event_output)
+        report["debate_state"] = _build_debate_state(report, industry_output, event_output, report["supervisor_review"])
+        report["risk_judge"] = _build_risk_judge(report, report["debate_state"], report["supervisor_review"])
+        if report["risk_judge"].get("verdict") == "revise":
+            revised_industry_output, revised_event_output = _run_expert_round(report, use_high_confidence_news=True)
+            report["expert_outputs"]["industry_researcher"] = revised_industry_output
+            report["expert_outputs"]["event_hunter"] = revised_event_output
+            report["supervisor_review"] = _run_supervisor_review(report, revised_industry_output, revised_event_output)
+            report["debate_state"] = _build_debate_state(
+                report,
+                revised_industry_output,
+                revised_event_output,
+                report["supervisor_review"],
+            )
+            report["risk_judge"] = _build_risk_judge(report, report["debate_state"], report["supervisor_review"], revised=True)
+    report["data_quality_verdict"] = _build_data_quality_verdict(report)
     report["evidences"] = _merge_all_evidences(report)
 
     return report
+
+
+def _run_expert_round(report: dict, use_high_confidence_news: bool = False) -> tuple[dict, dict]:
+    if not use_high_confidence_news:
+        return _build_industry_research_output(report), _build_event_hunter_output(report)
+    original_news = report.get("news", [])
+    selected_news = _select_high_confidence_news(original_news)
+    if not selected_news:
+        return _build_industry_research_output(report), _build_event_hunter_output(report)
+    report["news"] = selected_news
+    try:
+        return _build_industry_research_output(report), _build_event_hunter_output(report)
+    finally:
+        report["news"] = original_news
+
+
+def _select_high_confidence_news(news_items: list) -> list:
+    selected = []
+    iterable = news_items if isinstance(news_items, list) else []
+    for item in iterable:
+        quality = _score_news_quality(item)
+        if quality.get("score", 0) >= 70 and quality.get("accepted"):
+            selected.append(item)
+    return selected
 
 
 # 优先从明确的价格关键词后提取股价，避免误取止损位/历史价等
@@ -868,6 +912,8 @@ def _build_industry_research_output(report: dict) -> dict:
         inflection = "下行拐点风险增加"
     return {
         "agent": "expert_industry_researcher",
+        "schema_version": "v2",
+        "schema_type": "structured_json",
         "stock_code": stock_code,
         "as_of_price": str(anchor_price),
         "as_of": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -926,6 +972,8 @@ def _build_event_hunter_output(report: dict) -> dict:
         strength = "中"
     return {
         "agent": "expert_event_hunter",
+        "schema_version": "v2",
+        "schema_type": "structured_json",
         "stock_code": stock_code,
         "as_of_price": str(anchor_price),
         "as_of": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -1472,10 +1520,99 @@ def _run_supervisor_review(report: dict, industry_output: dict, event_output: di
     }
 
 
+def _build_debate_state(report: dict, industry_output: dict, event_output: dict, supervisor_review: dict) -> dict:
+    open_claims = [
+        {
+            "claim_id": "industry_outlook",
+            "source_agent": "industry_researcher",
+            "claim": industry_output.get("outlook", "景气中性"),
+            "decision_hint": industry_output.get("decision_hint", "观察"),
+        },
+        {
+            "claim_id": "event_impact",
+            "source_agent": "event_hunter",
+            "claim": event_output.get("impact_direction", "中性"),
+            "decision_hint": event_output.get("decision_hint", "观察"),
+        },
+    ]
+    conflict_items = supervisor_review.get("conflict_items", [])
+    unresolved_claims = []
+    resolved_claims = []
+    for item in open_claims:
+        if conflict_items:
+            unresolved_claims.append(item)
+        else:
+            resolved_claims.append(item)
+    focus_claims = [item.get("claim_id", "") for item in unresolved_claims][:2]
+    return {
+        "open_claims": open_claims,
+        "resolved_claims": resolved_claims,
+        "unresolved_claims": unresolved_claims,
+        "focus_claims": focus_claims,
+        "round_summary": supervisor_review.get("arbitration_reason", "信号一致"),
+    }
+
+
+def _build_risk_judge(report: dict, debate_state: dict, supervisor_review: dict, revised: bool = False) -> dict:
+    audit_gate = report.get("audit_gate", {})
+    identity_gate = report.get("expert_identity_gate", {})
+    unresolved_count = len(debate_state.get("unresolved_claims", []))
+    result_label_cap = supervisor_review.get("result_label_cap", "观察")
+    if not audit_gate.get("passed", True) or not identity_gate.get("passed", True):
+        verdict = "fail"
+    elif unresolved_count > 0 and result_label_cap in ("观察", "回避") and not revised:
+        verdict = "revise"
+    else:
+        verdict = "pass"
+    hard_constraints = []
+    if unresolved_count > 0:
+        hard_constraints.append("存在未收敛争议主张")
+    if result_label_cap == "回避":
+        hard_constraints.append("主管仲裁标签上限为回避")
+    return {
+        "verdict": verdict,
+        "revised": revised,
+        "unresolved_claim_count": unresolved_count,
+        "result_label_cap": result_label_cap,
+        "hard_constraints": hard_constraints,
+    }
+
+
+def _build_data_quality_verdict(report: dict) -> dict:
+    audit_gate = report.get("audit_gate", {})
+    identity_gate = report.get("expert_identity_gate", {})
+    sentiment = report.get("sentiment_governance", {})
+    avg_quality = _safe_float(sentiment.get("average_quality_score", 0))
+    accepted_count = int(_safe_float(sentiment.get("accepted_count", 0)))
+    score = 100
+    if not audit_gate.get("passed", True):
+        score -= 35
+    if not identity_gate.get("passed", True):
+        score -= 35
+    if avg_quality < 60:
+        score -= 15
+    if accepted_count == 0:
+        score -= 15
+    verdict = "high"
+    if score < 85:
+        verdict = "medium"
+    if score < 65:
+        verdict = "low"
+    return {
+        "score": max(0, score),
+        "verdict": verdict,
+        "audit_passed": bool(audit_gate.get("passed", False)),
+        "identity_passed": bool(identity_gate.get("passed", False)),
+        "accepted_news_count": accepted_count,
+        "average_news_quality": f"{avg_quality:.1f}",
+    }
+
+
 def _merge_all_evidences(report: dict) -> list:
     merged = []
     merged.extend(report.get("evidences", []))
     expert_outputs = report.get("expert_outputs", {})
+    merged.extend(_extract_fundamental_evidences(expert_outputs.get("fundamental_expert", {})))
     merged.extend(expert_outputs.get("industry_researcher", {}).get("evidences", []))
     merged.extend(expert_outputs.get("event_hunter", {}).get("evidences", []))
     merged.extend(report.get("supervisor_review", {}).get("evidences", []))
@@ -1490,6 +1627,35 @@ def _merge_all_evidences(report: dict) -> list:
             }
         )
     return normalized
+
+
+def _extract_fundamental_evidences(output: dict) -> list:
+    payload = output if isinstance(output, dict) else {}
+    evidences = payload.get("evidences", [])
+    if isinstance(evidences, list) and evidences:
+        return evidences
+    legacy_positive = payload.get("正向证据", [])
+    legacy_negative = payload.get("反向证据", [])
+    merged = []
+    for text in legacy_positive if isinstance(legacy_positive, list) else []:
+        merged.append(
+            {
+                "conclusion": "基本面正向证据",
+                "value": str(text),
+                "source_url": "N/A",
+                "timestamp": "N/A",
+            }
+        )
+    for text in legacy_negative if isinstance(legacy_negative, list) else []:
+        merged.append(
+            {
+                "conclusion": "基本面反向证据",
+                "value": str(text),
+                "source_url": "N/A",
+                "timestamp": "N/A",
+            }
+        )
+    return merged
 
 
 def format_analysis_report(stock_code: str, stock_name: str, search_data: list) -> str:
@@ -1689,12 +1855,15 @@ def _build_single_stock_markdown(stock: dict, date_text: str) -> str:
         f"- 置信度：{_derive_confidence(stock)}",
     ]
     lines.extend(_build_data_audit_lines(stock))
+    lines.extend(_build_data_quality_verdict_lines(stock))
     lines.extend(_build_data_source_meta_lines(stock))
     lines.extend(_build_authenticity_verification_lines(stock))
+    lines.extend(_build_debate_risk_lines(stock))
     lines.extend(_build_expert_identity_lines(stock))
     lines.extend(_build_process_block_lines(stock))
     lines.extend(_build_revenue_snapshot_lines(stock))
     lines.extend(_build_shortline_signal_lines(stock))
+    lines.extend(_build_fundamental_expert_lines(stock))
     lines.extend(_build_industry_research_lines(stock))
     lines.extend(_build_event_hunter_lines(stock))
     lines.extend(_build_supervisor_arbitration_lines(stock))
@@ -1703,6 +1872,7 @@ def _build_single_stock_markdown(stock: dict, date_text: str) -> str:
     if warning:
         lines.extend(["", warning])
     lines.extend(_build_evidence_lines(stock))
+    lines.extend(_build_machine_readable_blocks(stock))
     return "\n".join(lines)
 
 
@@ -1754,12 +1924,15 @@ def _build_stock_pool_markdown(stocks: list, date_text: str) -> str:
             f"- 置信度：{_derive_confidence(stock)}",
         ])
         lines.extend(_build_data_audit_lines(stock))
+        lines.extend(_build_data_quality_verdict_lines(stock))
         lines.extend(_build_data_source_meta_lines(stock))
         lines.extend(_build_authenticity_verification_lines(stock))
+        lines.extend(_build_debate_risk_lines(stock))
         lines.extend(_build_expert_identity_lines(stock))
         lines.extend(_build_process_block_lines(stock))
         lines.extend(_build_revenue_snapshot_lines(stock))
         lines.extend(_build_shortline_signal_lines(stock))
+        lines.extend(_build_fundamental_expert_lines(stock))
         lines.extend(_build_industry_research_lines(stock))
         lines.extend(_build_event_hunter_lines(stock))
         lines.extend(_build_supervisor_arbitration_lines(stock))
@@ -1768,8 +1941,48 @@ def _build_stock_pool_markdown(stocks: list, date_text: str) -> str:
         if warning:
             lines.extend(["", warning])
         lines.extend(_build_evidence_lines(stock))
+        lines.extend(_build_machine_readable_blocks(stock))
         lines.append("")
+    lines.extend(_build_pool_machine_readable_blocks(stocks))
     return "\n".join(lines).strip()
+
+
+def _build_machine_readable_blocks(stock: dict) -> list:
+    code = stock.get("stock_code", "000000")
+    name = stock.get("stock_name", "未知标的")
+    verdict = {
+        "scope": "single",
+        "stock_code": code,
+        "stock_name": name,
+        "label": stock.get("label", "观察"),
+        "confidence": _derive_confidence(stock),
+    }
+    risk_judge = stock.get("risk_judge", {})
+    data_quality = stock.get("data_quality_verdict", {})
+    return [
+        "",
+        f"<!-- VERDICT:{json.dumps(verdict, ensure_ascii=False, separators=(',', ':'))} -->",
+        f"<!-- RISK_JUDGE:{json.dumps(risk_judge, ensure_ascii=False, separators=(',', ':'))} -->",
+        f"<!-- DATA_QUALITY:{json.dumps(data_quality, ensure_ascii=False, separators=(',', ':'))} -->",
+    ]
+
+
+def _build_pool_machine_readable_blocks(stocks: list) -> list:
+    items = []
+    for stock in stocks:
+        items.append(
+            {
+                "stock_code": stock.get("stock_code", "000000"),
+                "label": stock.get("label", "观察"),
+                "risk_verdict": (stock.get("risk_judge", {}) or {}).get("verdict", "pass"),
+                "quality_verdict": (stock.get("data_quality_verdict", {}) or {}).get("verdict", "low"),
+            }
+        )
+    payload = {"scope": "pool", "items": items}
+    return [
+        "",
+        f"<!-- POOL_VERDICT:{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))} -->",
+    ]
 
 
 def _build_reversal_warning(stock: dict) -> str:
@@ -2026,6 +2239,45 @@ def _build_data_source_meta_lines(stock: dict) -> list:
     return lines
 
 
+def _build_data_quality_verdict_lines(stock: dict) -> list:
+    verdict = stock.get("data_quality_verdict", {})
+    if not verdict:
+        return []
+    lines = [
+        "",
+        "## 数据质量裁决",
+        "",
+        f"- 质量评分：{verdict.get('score', 0)}",
+        f"- 质量等级：{verdict.get('verdict', 'low')}",
+        f"- 审计通过：{'是' if verdict.get('audit_passed') else '否'}",
+        f"- 身份校验通过：{'是' if verdict.get('identity_passed') else '否'}",
+        f"- 采纳资讯条数：{verdict.get('accepted_news_count', 0)}",
+        f"- 平均资讯质量分：{verdict.get('average_news_quality', '0.0')}",
+    ]
+    return lines
+
+
+def _build_debate_risk_lines(stock: dict) -> list:
+    debate_state = stock.get("debate_state", {})
+    risk_judge = stock.get("risk_judge", {})
+    if not debate_state and not risk_judge:
+        return []
+    lines = [
+        "",
+        "## 争议收敛与风险裁决",
+        "",
+        f"- 未收敛主张数：{len(debate_state.get('unresolved_claims', []))}",
+        f"- 关注主张：{', '.join(debate_state.get('focus_claims', [])) or '无'}",
+        f"- 本轮摘要：{debate_state.get('round_summary', 'N/A')}",
+        f"- 风险裁决：{risk_judge.get('verdict', 'pass')}",
+        f"- 风险标签上限：{risk_judge.get('result_label_cap', '观察')}",
+    ]
+    constraints = risk_judge.get("hard_constraints", [])
+    if constraints:
+        lines.append(f"- 硬约束：{'; '.join(constraints)}")
+    return lines
+
+
 def _build_data_audit_lines(stock: dict) -> list:
     gate = stock.get("audit_gate", {})
     if not gate:
@@ -2139,6 +2391,29 @@ def _build_industry_research_lines(stock: dict) -> list:
     ]
 
 
+def _build_fundamental_expert_lines(stock: dict) -> list:
+    output = _resolve_fundamental_output(stock)
+    if not output:
+        return []
+    normalized = _normalize_fundamental_output(output)
+    positive = normalized.get("positive_evidences", [])
+    negative = normalized.get("negative_evidences", [])
+    lines = [
+        "",
+        "## 基本面专家结论",
+        "",
+        f"- 观点摘要：{normalized.get('summary', 'N/A')}",
+        f"- 风险提示：{normalized.get('risk_tip', 'N/A')}",
+        f"- 置信度：{normalized.get('confidence', '低')}",
+        f"- 决策建议：{normalized.get('decision_hint', '观察')}",
+    ]
+    if positive:
+        lines.append(f"- 正向证据：{'；'.join(positive[:3])}")
+    if negative:
+        lines.append(f"- 反向证据：{'；'.join(negative[:3])}")
+    return lines
+
+
 def _build_event_hunter_lines(stock: dict) -> list:
     output = _resolve_event_output(stock)
     if not output:
@@ -2201,6 +2476,37 @@ def _resolve_industry_output(stock: dict) -> dict:
     if output:
         return output
     return stock.get("expert_outputs", {}).get("industry_researcher", {})
+
+
+def _resolve_fundamental_output(stock: dict) -> dict:
+    output = stock.get("fundamental_expert_output", {})
+    if output:
+        return output
+    return stock.get("expert_outputs", {}).get("fundamental_expert", {})
+
+
+def _normalize_fundamental_output(output: dict) -> dict:
+    payload = output if isinstance(output, dict) else {}
+    summary = payload.get("summary") or payload.get("观点摘要") or "N/A"
+    risk_tip = payload.get("risk_tip") or payload.get("风险提示") or "N/A"
+    confidence = payload.get("confidence") or payload.get("置信度") or "低"
+    decision_hint = payload.get("decision_hint", "观察")
+    decision_mapping = {"看多": "可做", "中性": "观察", "看空": "回避"}
+    decision_hint = decision_mapping.get(str(decision_hint), str(decision_hint))
+    positive = payload.get("positive_evidences")
+    if not isinstance(positive, list):
+        positive = payload.get("正向证据", [])
+    negative = payload.get("negative_evidences")
+    if not isinstance(negative, list):
+        negative = payload.get("反向证据", [])
+    return {
+        "summary": str(summary),
+        "risk_tip": str(risk_tip),
+        "confidence": str(confidence),
+        "decision_hint": str(decision_hint),
+        "positive_evidences": [str(item) for item in (positive if isinstance(positive, list) else [])],
+        "negative_evidences": [str(item) for item in (negative if isinstance(negative, list) else [])],
+    }
 
 
 def _resolve_event_output(stock: dict) -> dict:

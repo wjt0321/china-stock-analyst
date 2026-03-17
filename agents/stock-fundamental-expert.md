@@ -16,15 +16,20 @@ color: green
 输出结构（JSON格式，字段名和枚举值严格遵守）：
 ```json
 {
-  "观点摘要": "一句话结论（≤50字）",
-  "正向证据": ["证据1（含数据来源）", "证据2"],
-  "反向证据": ["风险点1", "风险点2"],
-  "风险提示": "主要风险描述",
-  "置信度": "高|中|低",
-  "decision_hint": "看多|中性|看空"
+  "schema_version": "v2",
+  "agent": "stock-fundamental-expert",
+  "summary": "一句话结论（≤50字）",
+  "positive_evidences": ["证据1", "证据2"],
+  "negative_evidences": ["风险点1", "风险点2"],
+  "risk_tip": "主要风险描述",
+  "confidence": "高|中|低",
+  "decision_hint": "可做|观察|回避",
+  "evidences": [
+    {"conclusion": "证据结论", "value": "证据值", "source_url": "链接", "timestamp": "YYYY-MM-DD HH:MM"}
+  ]
 }
 ```
 
 置信度枚举：`高`（证据充分且一致）、`中`（部分字段缺失或有冲突）、`低`（数据严重不足）
-decision_hint 枚举：`看多`、`中性`、`看空`
+decision_hint 枚举：`可做`、`观察`、`回避`
 

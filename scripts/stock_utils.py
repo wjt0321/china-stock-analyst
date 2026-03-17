@@ -95,6 +95,7 @@ QUERY_FIELD_MAP = {
     "name": "name",
     "market": "market",
 }
+DATA_EVIDENCE_REQUIRED_FIELDS = ("price", "change_percent", "turnover_rate", "main_net_inflow")
 
 
 class EastmoneyPostError(RuntimeError):
@@ -247,6 +248,80 @@ def _extract_key_fields_from_query_row(row: dict, requested_fields: list) -> dic
     return key_fields
 
 
+def _build_data_evidences(query_row: dict, requested_fields: list, source_timestamp: str) -> list:
+    row = _as_dict(query_row)
+    evidences = []
+    for raw_field in requested_fields:
+        field_name = str(raw_field or "").strip()
+        if not field_name:
+            continue
+        normalized_field = _normalize_query_field_name(field_name)
+        mapped_field = QUERY_FIELD_MAP.get(normalized_field, normalized_field)
+        candidates = [mapped_field]
+        if normalized_field not in candidates:
+            candidates.append(normalized_field)
+        if field_name not in candidates:
+            candidates.append(field_name)
+        resolved_value = None
+        resolved_key = ""
+        for candidate in candidates:
+            value = row.get(candidate)
+            if value in (None, ""):
+                continue
+            resolved_value = value
+            resolved_key = str(candidate)
+            break
+        if resolved_value in (None, ""):
+            continue
+        evidences.append(
+            {
+                "field": field_name,
+                "normalized_field": normalized_field,
+                "value": resolved_value,
+                "source_field": resolved_key or mapped_field,
+                "source_type": "eastmoney_query",
+                "source_url": "eastmoney://query",
+                "source_timestamp": source_timestamp or "",
+                "verified_by_eastmoney": True,
+                "confidence": "high" if source_timestamp else "medium",
+            }
+        )
+    return evidences
+
+
+def _build_field_conflict_summary(query_row: dict, requested_fields: list) -> dict:
+    row = _as_dict(query_row)
+    conflicts = []
+    for raw_field in requested_fields:
+        field_name = str(raw_field or "").strip()
+        if not field_name:
+            continue
+        normalized_field = _normalize_query_field_name(field_name)
+        mapped_field = QUERY_FIELD_MAP.get(normalized_field, normalized_field)
+        source_values = {}
+        for candidate in [mapped_field, normalized_field, field_name]:
+            value = row.get(candidate)
+            if value in (None, ""):
+                continue
+            source_values[str(candidate)] = value
+        if len(source_values) <= 1:
+            continue
+        normalized_values = {str(value).strip() for value in source_values.values()}
+        if len(normalized_values) > 1:
+            conflicts.append(
+                {
+                    "field": field_name,
+                    "mapped_field": mapped_field,
+                    "candidate_values": source_values,
+                }
+            )
+    return {
+        "has_conflict": bool(conflicts),
+        "conflict_count": len(conflicts),
+        "conflicts": conflicts,
+    }
+
+
 def _pick_trade_date_from_source_timestamp(timestamp_text: str) -> str:
     raw = str(timestamp_text or "").strip()
     if not raw:
@@ -288,9 +363,18 @@ def _build_standardized_key_fields(
     }
 
 
-def _build_data_quality_summary(selected_key_fields: dict, missing_fields: list, source_timestamp: str) -> dict:
+def _build_data_quality_summary(
+    selected_key_fields: dict,
+    missing_fields: list,
+    source_timestamp: str,
+    data_evidences: list = None,
+    conflict_summary: dict = None,
+) -> dict:
     required_fields = ["price"]
-    missing_required = [field for field in required_fields if field not in selected_key_fields]
+    normalized_selected = {
+        _normalize_query_field_name(name): value for name, value in _as_dict(selected_key_fields).items()
+    }
+    missing_required = [field for field in required_fields if field not in normalized_selected]
     quality_score = 100
     if missing_fields:
         quality_score -= min(len(missing_fields) * 12, 40)
@@ -298,13 +382,22 @@ def _build_data_quality_summary(selected_key_fields: dict, missing_fields: list,
         quality_score -= 35
     if not source_timestamp:
         quality_score -= 10
+    conflict_meta = _as_dict(conflict_summary)
+    if conflict_meta.get("has_conflict"):
+        quality_score -= min(int(conflict_meta.get("conflict_count", 0)) * 10, 30)
+    evidence_count = len(_as_list(data_evidences))
+    if evidence_count == 0:
+        quality_score -= 25
     return {
         "provider": "eastmoney_query",
         "required_fields": required_fields,
         "missing_required_fields": missing_required,
         "missing_fields": list(missing_fields),
         "source_timestamp_present": bool(source_timestamp),
-        "is_usable": len(missing_required) == 0,
+        "evidence_count": evidence_count,
+        "has_field_conflict": bool(conflict_meta.get("has_conflict", False)),
+        "field_conflict_count": int(conflict_meta.get("conflict_count", 0) or 0),
+        "is_usable": len(missing_required) == 0 and not conflict_meta.get("has_conflict", False),
         "quality_score": max(0, quality_score),
     }
 
@@ -766,6 +859,8 @@ def parse_eastmoney_query_response(resp: dict, request_payload: dict = None) -> 
     missing_fields = [field for field in requested_fields if field not in selected_key_fields]
     blocked_by_guardrail = _detect_large_range_blocked(data)
     source_timestamp = _extract_source_timestamp(base_sample, fallback_text=json.dumps(base_sample, ensure_ascii=False))
+    data_evidences = _build_data_evidences(base_sample, requested_fields, source_timestamp)
+    conflict_summary = _build_field_conflict_summary(base_sample, requested_fields)
     standardized_key_fields = _build_standardized_key_fields(
         request_payload=request_payload or {},
         selected_key_fields=selected_key_fields,
@@ -776,6 +871,8 @@ def parse_eastmoney_query_response(resp: dict, request_payload: dict = None) -> 
         selected_key_fields=selected_key_fields,
         missing_fields=missing_fields,
         source_timestamp=source_timestamp,
+        data_evidences=data_evidences,
+        conflict_summary=conflict_summary,
     )
     data_has_payload = isinstance(data_root, dict) and any(value not in (None, "", [], {}) for value in data_root.values())
     empty_result = not bool(records or data_has_payload)
@@ -792,6 +889,8 @@ def parse_eastmoney_query_response(resp: dict, request_payload: dict = None) -> 
         "key_fields_priority": key_fields_priority,
         "standardized_key_fields": standardized_key_fields,
         "key_fields_source_priority": list(QUERY_KEY_FIELD_SOURCE_PRIORITY),
+        "data_evidences": data_evidences,
+        "field_conflict_summary": conflict_summary,
         "model_completion_forbidden": True,
         "supplemental_news_only": True,
         "source_timestamp": source_timestamp,

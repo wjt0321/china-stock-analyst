@@ -13,9 +13,19 @@ color: teal
 - 给出行业维度的正反证据
 - 不输出最终交易建议
 
-输出结构：
-- 行业结论
-- 景气证据
-- 同业对比
-- 风险与反证
-- 结论置信度
+输出结构（JSON格式，字段名和枚举值严格遵守）：
+```json
+{
+  "schema_version": "v2",
+  "agent": "expert_industry_researcher",
+  "industry_outlook": "景气上行|景气中性|景气承压",
+  "decision_hint": "可做|观察|回避",
+  "score": 0,
+  "inflection": "拐点描述",
+  "drivers": ["驱动因子1", "驱动因子2"],
+  "risk_hint": "风险提示",
+  "evidences": [
+    {"conclusion": "证据结论", "value": "证据值", "source_url": "链接", "timestamp": "YYYY-MM-DD HH:MM"}
+  ]
+}
+```

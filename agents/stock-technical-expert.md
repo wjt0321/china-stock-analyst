@@ -13,9 +13,20 @@ color: orange
 - 明确无效条件与风险边界
 - 不替代风控与总监仲裁
 
-输出结构：
-- 技术结论
-- 关键位
-- 触发条件
-- 无效条件
-- 风险说明
+输出结构（JSON格式，字段名和枚举值严格遵守）：
+```json
+{
+  "schema_version": "v2",
+  "agent": "stock-technical-expert",
+  "technical_view": "多头|震荡|空头",
+  "trend_strength": "strong|medium|weak",
+  "key_levels": {"support": ["9.80", "9.50"], "resistance": ["10.40", "10.80"]},
+  "trigger_conditions": ["放量突破10.40"],
+  "invalidation_conditions": ["跌破9.80且量能放大"],
+  "risk_notes": ["风险说明1"],
+  "decision_hint": "可做|观察|回避",
+  "evidences": [
+    {"conclusion": "技术证据", "value": "证据值", "source_url": "链接", "timestamp": "YYYY-MM-DD HH:MM"}
+  ]
+}
+```

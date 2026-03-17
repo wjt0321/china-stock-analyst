@@ -13,9 +13,21 @@ color: cyan
 - 明确宏观结论对交易条件的约束
 - 不替代公司基本面分析
 
-输出结构：
-- 宏观结论
-- 关键驱动
-- 对标的影响路径
-- 约束条件
-- 不确定性
+输出结构（JSON格式，字段名和枚举值严格遵守）：
+```json
+{
+  "schema_version": "v2",
+  "agent": "stock-macro-expert",
+  "macro_view": "risk_on|neutral|risk_off",
+  "policy_cycle": "宽松|中性|收紧",
+  "systematic_risk_level": "low|medium|high",
+  "key_drivers": ["驱动1", "驱动2"],
+  "impact_path": "政策->流动性->估值",
+  "constraints": ["约束1", "约束2"],
+  "uncertainties": ["不确定性1"],
+  "decision_hint": "可做|观察|回避",
+  "evidences": [
+    {"conclusion": "宏观证据", "value": "证据值", "source_url": "链接", "timestamp": "YYYY-MM-DD HH:MM"}
+  ]
+}
+```

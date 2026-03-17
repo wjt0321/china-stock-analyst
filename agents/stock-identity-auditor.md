@@ -13,9 +13,21 @@ color: magenta
 - 给出通过/降级/阻断结论
 - 不参与交易方向判断
 
-输出结构：
-- 鉴别结论
-- 冲突项
-- 失败原因码
-- 证据片段
-- 处理建议
+输出结构（JSON格式，字段名和枚举值严格遵守）：
+```json
+{
+  "schema_version": "v2",
+  "agent": "stock-identity-auditor",
+  "identity_verdict": "pass|downgrade|block",
+  "reason_codes": ["IDENTITY_CODE_NAME_MISMATCH"],
+  "conflict_items": [
+    {"field": "stock_name", "expected": "浦发银行", "actual": "招商银行", "evidence": "冲突证据"}
+  ],
+  "price_check": {"passed": true, "reference_price": "10.20", "observed_price": "10.22"},
+  "evidences": [
+    {"conclusion": "身份绑定正确", "value": "600000-浦发银行", "source_url": "链接", "timestamp": "YYYY-MM-DD HH:MM"}
+  ],
+  "action": "continue|downgrade|block",
+  "user_tip": "处理建议"
+}
+```
