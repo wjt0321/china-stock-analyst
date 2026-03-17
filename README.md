@@ -65,7 +65,7 @@ git clone https://github.com/wjt0321/china-stock-analyst.git
 python -m unittest tests/test_stock_skill.py -v
 ```
 
-当前测试结果：**79 个用例全部通过** ✅
+当前测试结果：**94 个用例全部通过** ✅
 
 ### AKShare 依赖安装（必做）
 
