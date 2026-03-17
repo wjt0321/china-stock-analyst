@@ -1,8 +1,9 @@
 # A股分析辅助脚本
-# 本脚本作为辅助工具，主要数据获取通过 Web Search 完成
+# 关键字段主来源为 AKShare，Web 检索仅用于资讯补充
 
 # 股票代码正则验证
 import json
+import importlib
 import logging
 import os
 import re
@@ -66,6 +67,54 @@ EASTMONEY_STOCK_SCREEN_COLUMN_MAP = {
     "score": "排序值",
 }
 
+AKSHARE_MODULE_NAME = "akshare"
+STANDARD_ERROR_CODE_INVALID_ARGUMENT = "INVALID_ARGUMENT"
+STANDARD_ERROR_CODE_AKSHARE_NOT_INSTALLED = "AKSHARE_NOT_INSTALLED"
+STANDARD_ERROR_CODE_AKSHARE_API_ERROR = "AKSHARE_API_ERROR"
+STANDARD_ERROR_CODE_DATA_EMPTY = "DATA_EMPTY"
+STANDARD_ERROR_CODE_DATA_SCHEMA_ERROR = "DATA_SCHEMA_ERROR"
+STANDARD_ERROR_CODE_INTERNAL_ERROR = "INTERNAL_ERROR"
+AKSHARE_SECURITY_FIELD_ALIASES = {
+    "symbol": ["代码", "股票代码", "symbol", "code"],
+    "name": ["名称", "股票简称", "stock_name", "name"],
+    "market": ["市场", "市场类型", "market"],
+    "trade_date": ["交易日期", "交易日", "日期", "更新时间", "trade_date", "date", "time"],
+    "last_price": ["最新价", "现价", "last_price", "price"],
+    "change_percent": ["涨跌幅", "change_percent", "pct_chg"],
+    "turnover_rate": ["换手率", "turnover_rate"],
+    "volume_ratio": ["量比", "volume_ratio"],
+    "pe_ttm": ["市盈率-动态", "市盈率TTM", "pe_ttm"],
+    "pb": ["市净率", "pb"],
+    "amount": ["成交额", "amount"],
+    "volume": ["成交量", "volume"],
+}
+QUERY_KEY_FIELD_SOURCE_PRIORITY = [
+    {"provider": "akshare", "priority": 1, "scope": "key_fields"},
+    {"provider": "eastmoney_query", "priority": 2, "scope": "query_fallback"},
+    {"provider": "web_search", "priority": 3, "scope": "news_supplement_only"},
+]
+AKSHARE_QUERY_FIELD_MAP = {
+    "price": "last_price",
+    "latest_price": "last_price",
+    "last_price": "last_price",
+    "change": "change_percent",
+    "change_percent": "change_percent",
+    "change_pct": "change_percent",
+    "pct_chg": "change_percent",
+    "turnover_rate": "turnover_rate",
+    "volume_ratio": "volume_ratio",
+    "pe_ttm": "pe_ttm",
+    "pb": "pb",
+    "amount": "amount",
+    "volume": "volume",
+    "stock_code": "symbol",
+    "code": "symbol",
+    "symbol": "symbol",
+    "stock_name": "name",
+    "name": "name",
+    "market": "market",
+}
+
 
 class EastmoneyPostError(RuntimeError):
     """东财 POST 请求异常基类"""
@@ -85,6 +134,309 @@ class EastmoneyHttpError(EastmoneyPostError):
 
 class EastmoneyDecodeError(EastmoneyPostError):
     """响应解析异常"""
+
+
+def _build_standard_result(data: Any = None, meta: dict = None) -> dict:
+    return {
+        "success": True,
+        "error": {},
+        "meta": _as_dict(meta),
+        "data": data if data is not None else {},
+    }
+
+
+def _build_standard_error(
+    code: str,
+    message: str,
+    retryable: bool = False,
+    details: Any = None,
+    meta: dict = None,
+) -> dict:
+    return {
+        "success": False,
+        "error": {
+            "code": str(code or STANDARD_ERROR_CODE_INTERNAL_ERROR),
+            "message": str(message or "未知错误"),
+            "retryable": bool(retryable),
+            "details": details if details is not None else {},
+        },
+        "meta": _as_dict(meta),
+        "data": {},
+    }
+
+
+def _get_value_by_alias(record: dict, aliases: list, default: Any = "") -> Any:
+    if not isinstance(record, dict):
+        return default
+    for key in aliases:
+        if key in record and record.get(key) not in (None, ""):
+            return record.get(key)
+    return default
+
+
+def _safe_number(value: Any) -> Any:
+    if value in (None, ""):
+        return ""
+    text = str(value).replace(",", "").strip()
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return value
+
+
+def _safe_records(dataset: Any) -> list:
+    if dataset is None:
+        return []
+    if isinstance(dataset, list):
+        return [item for item in dataset if isinstance(item, dict)]
+    if isinstance(dataset, dict):
+        return [dataset]
+    to_dict_fn = getattr(dataset, "to_dict", None)
+    if callable(to_dict_fn):
+        try:
+            records = to_dict_fn("records")
+            if isinstance(records, list):
+                return [item for item in records if isinstance(item, dict)]
+        except Exception:
+            return []
+    return []
+
+
+def _load_akshare_module() -> Any:
+    try:
+        return importlib.import_module(AKSHARE_MODULE_NAME)
+    except ModuleNotFoundError:
+        return None
+
+
+def _normalize_market(value: Any) -> str:
+    text = str(value or "").upper()
+    if text in ("SH", "SSE", "1"):
+        return "SH"
+    if text in ("SZ", "SZSE", "0", "2"):
+        return "SZ"
+    return text or "A"
+
+
+def _normalize_trade_date_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    normalized = (
+        text.replace("年", "-")
+        .replace("月", "-")
+        .replace("日", "")
+        .replace("/", "-")
+        .replace("T", " ")
+    )
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            dt = datetime.strptime(normalized, fmt)
+            return dt.strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    matched = re.search(r"(20\d{2}-\d{1,2}-\d{1,2})", normalized)
+    if matched:
+        try:
+            dt = datetime.strptime(matched.group(1), "%Y-%m-%d")
+            return dt.strftime("%Y-%m-%d")
+        except ValueError:
+            return ""
+    return ""
+
+
+def _normalize_security_record(record: dict) -> dict:
+    normalized = {}
+    for field, aliases in AKSHARE_SECURITY_FIELD_ALIASES.items():
+        normalized[field] = _get_value_by_alias(record, aliases, "")
+    normalized["symbol"] = str(normalized.get("symbol") or "").strip()
+    normalized["name"] = str(normalized.get("name") or "").strip()
+    normalized["market"] = _normalize_market(normalized.get("market"))
+    normalized["trade_date"] = _normalize_trade_date_text(normalized.get("trade_date"))
+    for numeric_field in (
+        "last_price",
+        "change_percent",
+        "turnover_rate",
+        "volume_ratio",
+        "pe_ttm",
+        "pb",
+        "amount",
+        "volume",
+    ):
+        normalized[numeric_field] = _safe_number(normalized.get(numeric_field))
+    return normalized
+
+
+def _filter_security_records(records: list, keyword: str, limit: int) -> list:
+    if not records:
+        return []
+    normalized_keyword = str(keyword or "").strip().lower()
+    result = []
+    for record in records:
+        normalized = _normalize_security_record(record)
+        if not normalized.get("symbol"):
+            continue
+        if normalized_keyword:
+            code_hit = normalized_keyword in str(normalized.get("symbol", "")).lower()
+            name_hit = normalized_keyword in str(normalized.get("name", "")).lower()
+            if not code_hit and not name_hit:
+                continue
+        result.append(normalized)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def query_akshare_securities(keyword: str = "", limit: int = 20) -> dict:
+    normalized_limit = 20 if limit is None else int(limit)
+    if normalized_limit <= 0:
+        return _build_standard_error(
+            code=STANDARD_ERROR_CODE_INVALID_ARGUMENT,
+            message="limit 必须为正整数",
+            details={"limit": limit},
+        )
+    ak = _load_akshare_module()
+    if ak is None:
+        return _build_standard_error(
+            code=STANDARD_ERROR_CODE_AKSHARE_NOT_INSTALLED,
+            message="未安装 AKShare，请先执行 `pip install akshare`",
+            retryable=False,
+        )
+    try:
+        raw = ak.stock_zh_a_spot_em()
+        records = _safe_records(raw)
+        if not records:
+            return _build_standard_error(
+                code=STANDARD_ERROR_CODE_DATA_EMPTY,
+                message="AKShare 未返回证券数据",
+                retryable=True,
+            )
+        matched = _filter_security_records(records, keyword=keyword, limit=normalized_limit)
+        if not matched:
+            return _build_standard_error(
+                code=STANDARD_ERROR_CODE_DATA_EMPTY,
+                message="未查询到匹配证券",
+                retryable=False,
+                details={"keyword": keyword},
+            )
+        return _build_standard_result(
+            data={"items": matched, "total": len(matched)},
+            meta={"provider": AKSHARE_MODULE_NAME, "endpoint": "stock_zh_a_spot_em"},
+        )
+    except AttributeError as error:
+        return _build_standard_error(
+            code=STANDARD_ERROR_CODE_DATA_SCHEMA_ERROR,
+            message="AKShare 接口不存在或版本不兼容",
+            retryable=False,
+            details={"error": str(error)},
+            meta={"provider": AKSHARE_MODULE_NAME},
+        )
+    except Exception as error:
+        return _build_standard_error(
+            code=STANDARD_ERROR_CODE_AKSHARE_API_ERROR,
+            message="AKShare 证券查询失败",
+            retryable=True,
+            details={"error": str(error), "keyword": keyword},
+            meta={"provider": AKSHARE_MODULE_NAME},
+        )
+
+
+def query_akshare_quote(symbol: str) -> dict:
+    normalized_symbol = str(symbol or "").strip()
+    if not validate_stock_code(normalized_symbol):
+        return _build_standard_error(
+            code=STANDARD_ERROR_CODE_INVALID_ARGUMENT,
+            message="symbol 必须是合法 A 股 6 位代码",
+            details={"symbol": symbol},
+        )
+    result = query_akshare_securities(keyword=normalized_symbol, limit=1)
+    if not result.get("success"):
+        return result
+    quote = _as_list(_dig_path(result, [["data", "items"]], default=[]))
+    exact = [item for item in quote if str(item.get("symbol", "")) == normalized_symbol]
+    if not exact:
+        return _build_standard_error(
+            code=STANDARD_ERROR_CODE_DATA_EMPTY,
+            message="未查询到该证券实时行情",
+            retryable=False,
+            details={"symbol": normalized_symbol},
+            meta=result.get("meta"),
+        )
+    quote = exact[0]
+    standardized = {
+        "symbol": quote.get("symbol", normalized_symbol),
+        "name": quote.get("name", ""),
+        "price": quote.get("last_price", ""),
+        "trade_date": quote.get("trade_date", ""),
+    }
+    return _build_standard_result(
+        data={"quote": quote, "standardized": standardized},
+        meta=result.get("meta"),
+    )
+
+
+def _normalize_query_field_name(field: Any) -> str:
+    return str(field or "").strip().lower()
+
+
+def _extract_key_fields_from_akshare_quote(quote: dict, requested_fields: list) -> dict:
+    if not isinstance(quote, dict):
+        return {}
+    key_fields = {}
+    for raw_field in requested_fields:
+        field_name = str(raw_field or "").strip()
+        if not field_name:
+            continue
+        mapped_field = AKSHARE_QUERY_FIELD_MAP.get(_normalize_query_field_name(field_name), "")
+        if not mapped_field:
+            continue
+        value = quote.get(mapped_field)
+        if value in (None, ""):
+            continue
+        key_fields[field_name] = value
+    return key_fields
+
+
+def _pick_trade_date_from_source_timestamp(timestamp_text: str) -> str:
+    raw = str(timestamp_text or "").strip()
+    if not raw:
+        return ""
+    matched = re.search(r"(20\d{2}-\d{1,2}-\d{1,2})", raw)
+    if not matched:
+        return ""
+    return _normalize_trade_date_text(matched.group(1))
+
+
+def _build_standardized_key_fields(
+    request_payload: dict,
+    selected_key_fields: dict,
+    akshare_quote: dict,
+    source_timestamp: str,
+) -> dict:
+    request_data = _as_dict(request_payload)
+    quote = _as_dict(akshare_quote)
+    price = (
+        selected_key_fields.get("price")
+        if "price" in selected_key_fields
+        else selected_key_fields.get("latest_price", "")
+    )
+    trade_date = (
+        quote.get("trade_date")
+        or _pick_trade_date_from_source_timestamp(source_timestamp)
+        or datetime.now().strftime("%Y-%m-%d")
+    )
+    return {
+        "symbol": str(
+            quote.get("symbol")
+            or request_data.get("stock_code")
+            or request_data.get("symbol")
+            or ""
+        ),
+        "name": str(quote.get("name") or request_data.get("stock_name") or ""),
+        "price": price,
+        "trade_date": trade_date,
+    }
 
 
 def _mask_secret(value: str, keep_start: int = 3, keep_end: int = 2) -> str:
@@ -495,10 +847,13 @@ def eastmoney_query(
         timeout=timeout,
         retries=retries,
     )
-    return parse_eastmoney_query_response(resp, request_payload=payload)
+    akshare_result = {}
+    if validate_stock_code(stock_code):
+        akshare_result = query_akshare_quote(stock_code)
+    return parse_eastmoney_query_response(resp, request_payload=payload, akshare_result=akshare_result)
 
 
-def parse_eastmoney_query_response(resp: dict, request_payload: dict = None) -> dict:
+def parse_eastmoney_query_response(resp: dict, request_payload: dict = None, akshare_result: dict = None) -> dict:
     data = resp or {}
     meta = _extract_common_meta(data)
     data_root = _dig_path(data, [["data"], ["result", "data"], ["result", "result", "data"]], default={})
@@ -516,22 +871,45 @@ def parse_eastmoney_query_response(resp: dict, request_payload: dict = None) -> 
     )
     requested_fields = _as_list((request_payload or {}).get("fields"))
     base_sample = _as_dict(records[0]) if records and isinstance(records[0], dict) else _as_dict(data_root)
-    key_fields = {field: base_sample.get(field) for field in requested_fields if field in base_sample}
-    missing_fields = [field for field in requested_fields if field not in base_sample]
+    eastmoney_key_fields = {field: base_sample.get(field) for field in requested_fields if field in base_sample}
+    selected_key_fields = dict(eastmoney_key_fields)
+    key_fields_provider = "eastmoney_query"
+    key_fields_priority = 2
+    akshare_quote = _as_dict(_dig_path(akshare_result or {}, [["data", "quote"]], default={}))
+    if (akshare_result or {}).get("success") and akshare_quote:
+        selected_key_fields = _extract_key_fields_from_akshare_quote(akshare_quote, requested_fields)
+        key_fields_provider = "akshare"
+        key_fields_priority = 1
+    missing_fields = [field for field in requested_fields if field not in selected_key_fields]
     blocked_by_guardrail = _detect_large_range_blocked(data)
     source_timestamp = _extract_source_timestamp(base_sample, fallback_text=json.dumps(base_sample, ensure_ascii=False))
+    standardized_key_fields = _build_standardized_key_fields(
+        request_payload=request_payload or {},
+        selected_key_fields=selected_key_fields,
+        akshare_quote=akshare_quote,
+        source_timestamp=source_timestamp,
+    )
+    data_has_payload = isinstance(data_root, dict) and any(value not in (None, "", [], {}) for value in data_root.values())
+    empty_result = not bool(records or data_has_payload)
     return {
         "endpoint": "query",
         "meta": meta,
         "request_payload": _desensitize_payload(request_payload or {}),
         "data": data_root if data_root else {"list": records} if records else {},
         "records": records,
-        "key_fields": key_fields,
+        "key_fields": selected_key_fields,
         "missing_fields": missing_fields,
+        "key_fields_provider": key_fields_provider,
+        "key_fields_priority": key_fields_priority,
+        "standardized_key_fields": standardized_key_fields,
+        "key_fields_source_priority": list(QUERY_KEY_FIELD_SOURCE_PRIORITY),
+        "model_completion_forbidden": True,
+        "supplemental_news_only": True,
+        "fallback_key_fields": eastmoney_key_fields if key_fields_provider == "akshare" else {},
         "source_timestamp": source_timestamp,
         "blocked_by_guardrail": blocked_by_guardrail,
         "guardrail_tip": EASTMONEY_BLOCKED_RESULT_TIP if blocked_by_guardrail else "",
-        "empty_result": not bool(data_root or records),
+        "empty_result": empty_result,
     }
 
 
@@ -751,6 +1129,7 @@ def get_realtime_source_pool() -> dict:
     """
     return {
         "core_fields": ["price", "change", "turnover", "main", "retail"],
+        "source_priority": list(QUERY_KEY_FIELD_SOURCE_PRIORITY),
         # 修复：从3降至2，实际可达到;
         # 要求来源类别数小于3同样会导致对正常数据的误报
         "required_categories": 2,

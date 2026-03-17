@@ -3,7 +3,7 @@ import sys
 import tempfile
 import unittest
 import importlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -86,10 +86,25 @@ class TestStockSkill(unittest.TestCase):
 
     def test_eastmoney_router_should_classify_news_intent(self):
         self._clear_team_router_runtime_state()
-        routed = tr.route_eastmoney_intent("请查600000最新公告与新闻舆情")
+        with mock.patch.object(
+            tr,
+            "_build_akshare_passthrough_meta",
+            return_value={
+                "provider": "akshare",
+                "source_function": "stock_utils.query_akshare_quote",
+                "fetched_at": "2026-03-10 10:05:00",
+                "validation_passed": True,
+                "validation_conclusion": "AKShare 元信息校验通过",
+            },
+        ):
+            routed = tr.route_eastmoney_intent("请查600000最新公告与新闻舆情")
         self.assertEqual(routed.get("intent_category"), "news-search")
         self.assertTrue(routed.get("critical_gate", {}).get("passed"))
         self.assertTrue(routed.get("local_saved"))
+        passthrough = routed.get("akshare_passthrough", {})
+        self.assertEqual(passthrough.get("source_function"), "stock_utils.query_akshare_quote")
+        self.assertEqual(passthrough.get("fetched_at"), "2026-03-10 10:05:00")
+        self.assertIn("校验通过", passthrough.get("validation_conclusion", ""))
 
     def test_eastmoney_router_should_block_query_without_target(self):
         self._clear_team_router_runtime_state()
@@ -100,6 +115,8 @@ class TestStockSkill(unittest.TestCase):
         self.assertTrue(gate.get("blocked_by_guardrail"))
         reasons = " ".join(gate.get("reasons", []))
         self.assertIn("缺少标的约束", reasons)
+        self.assertIn("TARGET_REQUIRED", gate.get("reason_codes", []))
+        self.assertTrue(any("股票代码" in tip or "股票名称" in tip for tip in gate.get("user_tips", [])))
 
     def test_eastmoney_router_should_block_when_limit_exceeds_threshold(self):
         self._clear_team_router_runtime_state()
@@ -109,6 +126,7 @@ class TestStockSkill(unittest.TestCase):
         self.assertFalse(gate.get("passed"))
         self.assertTrue(gate.get("blocked_by_guardrail"))
         self.assertIn("返回数量超限", " ".join(gate.get("reasons", [])))
+        self.assertIn("REQUEST_LIMIT_EXCEEDED", gate.get("reason_codes", []))
 
     def test_eastmoney_router_cache_should_trigger_duplicate_threshold(self):
         self._clear_team_router_runtime_state()
@@ -121,6 +139,42 @@ class TestStockSkill(unittest.TestCase):
         self.assertTrue(cache.get("duplicate_threshold_triggered"))
         self.assertFalse(gate.get("passed"))
         self.assertTrue(gate.get("blocked_by_guardrail"))
+        self.assertIn("DUPLICATE_REQUEST", gate.get("reason_codes", []))
+
+    def test_eastmoney_router_should_enter_fallback_mode_when_intent_not_matched(self):
+        self._clear_team_router_runtime_state()
+        routed = tr.route_eastmoney_intent("帮我看看最近市场有没有机会")
+        gate = routed.get("critical_gate", {})
+        self.assertEqual(routed.get("intent_category"), "none")
+        self.assertTrue(routed.get("fallback_mode"))
+        self.assertEqual(gate.get("fallback_action"), "use_local_analysis_only")
+        self.assertIn("INTENT_NOT_MATCHED", gate.get("reason_codes", []))
+
+    def test_eastmoney_router_should_flag_target_mismatch_and_enter_fallback_mode(self):
+        self._clear_team_router_runtime_state()
+        routed = tr.route_eastmoney_intent("请查询浦发银行资金流向", stock_name="浦发银行")
+        gate = routed.get("critical_gate", {})
+        self.assertEqual(routed.get("intent_category"), "query")
+        self.assertTrue(gate.get("passed"))
+        self.assertIn("AKSHARE_METADATA_UNAVAILABLE", gate.get("reason_codes", []))
+        self.assertTrue(routed.get("fallback_mode"))
+
+    def test_eastmoney_router_cache_should_reset_when_previous_cache_expired(self):
+        self._clear_team_router_runtime_state()
+        request = "请查询600000行情成交额"
+        normalized = tr._normalize_request(request)
+        cache_key = tr._build_intent_cache_key(normalized)
+        expired_at = (datetime.now() - timedelta(seconds=tr.INTENT_CACHE_TTL_SECONDS + 5)).strftime("%Y-%m-%d %H:%M:%S")
+        with mock.patch.object(tr, "_load_json_file", return_value={"items": {"legacy-key": {"updated_at": expired_at}}}), \
+            mock.patch.object(tr, "_save_json_file", return_value=True):
+            routed = tr.route_eastmoney_intent(request)
+        cache = routed.get("cache", {})
+        gate = routed.get("critical_gate", {})
+        self.assertEqual(cache.get("key"), cache_key)
+        self.assertFalse(cache.get("cache_hit"))
+        self.assertEqual(cache.get("hit_count"), 1)
+        self.assertFalse(cache.get("duplicate_threshold_triggered"))
+        self.assertNotIn("DUPLICATE_REQUEST", gate.get("reason_codes", []))
 
     def test_should_auto_activate_full_parallel_for_today_collect_screen_discuss_recommend_request(self):
         request = "请今日采集市场数据，筛选10支，再组织专家讨论，最后推荐3支"
@@ -818,6 +872,108 @@ class TestStockSkill(unittest.TestCase):
         self.assertFalse(gate.get("price_passed"))
         self.assertIn("PRICE_CURRENCY_UNIT_INCONSISTENT", gate.get("failed_reason_codes", []))
 
+    def test_expert_identity_gate_should_fail_when_price_out_of_valid_range(self):
+        report = {
+            "stock_code": "600000",
+            "canonical_name": "浦发银行",
+            "price_info": {"price": "9999"},
+            "identity_mentions": [
+                {
+                    "stock_code": "600000",
+                    "stock_name": "浦发银行",
+                    "source_category": "交易所/监管",
+                    "timestamp": "2026-03-10 10:05",
+                },
+                {
+                    "stock_code": "600000",
+                    "stock_name": "上海浦东发展银行",
+                    "source_category": "财经媒体",
+                    "timestamp": "2026-03-10 10:06",
+                },
+            ],
+            "price_semantic_records": [
+                {"currency": "CNY", "unit": "元/股", "source_category": "交易所/监管", "timestamp": "2026-03-10 10:05"},
+                {"currency": "CNY", "unit": "元/股", "source_category": "财经媒体", "timestamp": "2026-03-10 10:06"},
+            ],
+        }
+        gate = gr._run_expert_identity_gate(report)
+        self.assertFalse(gate.get("passed"))
+        self.assertFalse(gate.get("price_passed"))
+        self.assertIn("PRICE_INVALID", gate.get("failed_reason_codes", []))
+        categories = {item.get("category") for item in gate.get("repair_suggestions", [])}
+        self.assertIn("price_validity", categories)
+
+    def test_expert_identity_gate_should_fail_when_trading_day_timeliness_is_stale(self):
+        report = {
+            "stock_code": "600000",
+            "request_date": "2026-03-10",
+            "canonical_name": "浦发银行",
+            "price_info": {"price": "10.20"},
+            "identity_mentions": [
+                {
+                    "stock_code": "600000",
+                    "stock_name": "浦发银行",
+                    "source_category": "交易所/监管",
+                    "timestamp": "2026-03-09 15:00",
+                },
+                {
+                    "stock_code": "600000",
+                    "stock_name": "上海浦东发展银行",
+                    "source_category": "财经媒体",
+                    "timestamp": "2026-03-09 15:01",
+                },
+            ],
+            "price_semantic_records": [
+                {"currency": "CNY", "unit": "元/股", "source_category": "交易所/监管", "timestamp": "2026-03-09 15:00"},
+                {"currency": "CNY", "unit": "元/股", "source_category": "财经媒体", "timestamp": "2026-03-09 15:01"},
+            ],
+            "field_sources": {
+                "price.price": [
+                    {"value": "10.20", "timestamp": "2026-03-09 15:00"},
+                ]
+            },
+            "expert_outputs": {
+                "industry_researcher": {"agent": "expert_industry_researcher", "stock_code": "600000", "as_of_price": "10.20"},
+                "event_hunter": {"agent": "expert_event_hunter", "stock_code": "600000", "as_of_price": "10.20"},
+            },
+        }
+        gate = gr._run_expert_identity_gate(report)
+        self.assertFalse(gate.get("passed"))
+        self.assertFalse(gate.get("trading_day_passed"))
+        self.assertIn("TRADING_DAY_STALE", gate.get("failed_reason_codes", []))
+        categories = {item.get("category") for item in gate.get("repair_suggestions", [])}
+        self.assertIn("trading_day_timeliness", categories)
+
+    def test_parse_report_should_return_structured_repair_suggestions_when_blocked(self):
+        search_data = [
+            {
+                "title": "交易所行情播报",
+                "snippet": "浦发银行(600000) 最新价10.20元/股，更新时间2026-03-09 15:00",
+                "link": "https://www.sse.com.cn/marketdata",
+                "timestamp": "2026-03-09 15:00",
+            },
+            {
+                "title": "财经媒体快讯",
+                "snippet": "上海浦东发展银行600000 最新价10.21元/股，更新时间2026-03-09 15:01",
+                "link": "https://www.yicai.com/news/stock",
+                "timestamp": "2026-03-09 15:01",
+            },
+        ]
+        report = parse_search_results_to_report(
+            search_data,
+            "600000",
+            stock_name="浦发银行",
+            request_date="2026-03-10",
+        )
+        self.assertTrue(report.get("process_block", {}).get("blocked"))
+        suggestions = report.get("repair_suggestions", [])
+        self.assertTrue(len(suggestions) >= 1)
+        first = suggestions[0]
+        self.assertIn("failure_code", first)
+        self.assertIn("category", first)
+        self.assertIn("required_action", first)
+        self.assertIsInstance(first.get("steps"), list)
+
     def test_expert_identity_gate_should_block_when_agent_or_price_mismatch(self):
         report = {
             "stock_code": "600000",
@@ -902,7 +1058,39 @@ class TestStockSkill(unittest.TestCase):
         self.assertIn("数据真实性鉴别结果", content)
         self.assertIn("最近校验时间戳：2026-03-10 10:18", content)
         self.assertIn("失败原因编码", content)
+        self.assertIn("用户提示", content)
         self.assertIn("风险提示", content)
+
+    def test_markdown_should_render_data_source_meta_and_unified_router_tips(self):
+        payload = {
+            "date": "2026-03-10",
+            "stocks": [
+                {
+                    "stock_code": "600000",
+                    "stock_name": "浦发银行",
+                    "label": "观察",
+                    "scores": {"momentum": 80, "revenue": 76, "risk": 72},
+                    "eastmoney_router": {
+                        "critical_gate": {
+                            "reason_codes": ["REQUEST_LIMIT_EXCEEDED", "TARGET_REQUIRED"],
+                            "user_tips": ["请降低返回条数（建议<=50）后重试。", "请补充股票代码或股票名称后再发起请求。"],
+                        }
+                    },
+                    "akshare_passthrough": {
+                        "source_function": "stock_utils.query_akshare_quote",
+                        "fetched_at": "2026-03-10 10:18:00",
+                        "validation_conclusion": "AKShare 元信息校验通过",
+                    },
+                }
+            ],
+        }
+        content = gr.format_obsidian_markdown_report(payload)
+        self.assertIn("数据源元信息", content)
+        self.assertIn("来源函数：stock_utils.query_akshare_quote", content)
+        self.assertIn("抓取时间：2026-03-10 10:18:00", content)
+        self.assertIn("校验结论：AKShare 元信息校验通过", content)
+        self.assertIn("路由失败原因码：REQUEST_LIMIT_EXCEEDED; TARGET_REQUIRED", content)
+        self.assertIn("路由用户提示", content)
 
     def test_complex_request_end_to_end_should_cover_full_closed_loop_dimensions(self):
         request = "请今日采集市场数据，筛选10支，再组织专家讨论，最后推荐3支"
@@ -1163,6 +1351,12 @@ class TestStockSkill(unittest.TestCase):
         self.assertEqual(parsed.get("empty_result_tip"), su.EASTMONEY_EMPTY_RESULT_TIP)
         self.assertIn("前往东方财富妙想AI", parsed.get("empty_result_tip", ""))
 
+    def test_parse_query_should_mark_empty_result_when_response_has_no_data(self):
+        parsed = su.parse_eastmoney_query_response({"code": "0", "data": {"list": []}}, request_payload={"fields": ["price"]})
+        self.assertTrue(parsed.get("empty_result"))
+        self.assertEqual(parsed.get("key_fields"), {})
+        self.assertIn("price", parsed.get("missing_fields", []))
+
     def test_daily_quota_should_persist_count_and_block_when_exceeded(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_counter = Path(tmpdir) / ".eastmoney_daily_counter.json"
@@ -1223,6 +1417,46 @@ class TestStockSkill(unittest.TestCase):
         self.assertIn("apikey", request_payload)
         self.assertNotEqual(request_payload["apikey"], "REAL_API_KEY_001")
 
+    def test_parse_query_should_prefer_akshare_for_key_fields_and_keep_missing_unfilled(self):
+        response = {"code": "0", "data": {"list": [{"price": 99.88, "change_percent": 9.9, "main_net_inflow": 12345}]}}
+        parsed = su.parse_eastmoney_query_response(
+            response,
+            request_payload={"fields": ["price", "change_percent", "main_net_inflow"]},
+            akshare_result={
+                "success": True,
+                "data": {"quote": {"symbol": "600000", "last_price": 10.11, "change_percent": 1.23}},
+            },
+        )
+        self.assertEqual(parsed.get("key_fields_provider"), "akshare")
+        self.assertEqual(parsed.get("key_fields_priority"), 1)
+        self.assertTrue(parsed.get("model_completion_forbidden"))
+        self.assertEqual(parsed.get("key_fields", {}).get("price"), 10.11)
+        self.assertEqual(parsed.get("key_fields", {}).get("change_percent"), 1.23)
+        self.assertIn("main_net_inflow", parsed.get("missing_fields", []))
+        self.assertNotIn("main_net_inflow", parsed.get("key_fields", {}))
+        self.assertIn("main_net_inflow", parsed.get("fallback_key_fields", {}))
+        standardized = parsed.get("standardized_key_fields", {})
+        self.assertEqual(standardized.get("symbol"), "600000")
+        self.assertEqual(standardized.get("price"), 10.11)
+        self.assertEqual(standardized.get("trade_date"), datetime.now().strftime("%Y-%m-%d"))
+
+    def test_parse_query_should_fallback_to_eastmoney_when_akshare_unavailable(self):
+        response = {"code": "0", "data": {"list": [{"price": 10.28, "change_percent": 1.8}]}}
+        parsed = su.parse_eastmoney_query_response(
+            response,
+            request_payload={"fields": ["price", "change_percent"]},
+            akshare_result={"success": False, "error": {"code": "AKSHARE_NOT_INSTALLED"}},
+        )
+        self.assertEqual(parsed.get("key_fields_provider"), "eastmoney_query")
+        self.assertEqual(parsed.get("key_fields_priority"), 2)
+        self.assertEqual(parsed.get("key_fields", {}).get("price"), 10.28)
+        self.assertEqual(parsed.get("key_fields", {}).get("change_percent"), 1.8)
+        self.assertEqual(parsed.get("missing_fields"), [])
+        self.assertEqual(parsed.get("fallback_key_fields"), {})
+        standardized = parsed.get("standardized_key_fields", {})
+        self.assertEqual(standardized.get("price"), 10.28)
+        self.assertEqual(standardized.get("trade_date"), datetime.now().strftime("%Y-%m-%d"))
+
     def test_normalize_stock_name_should_keep_st_prefix_by_default(self):
         self.assertEqual(su.normalize_stock_name("ST中珠"), "ST中珠")
         self.assertEqual(su.normalize_stock_name(" *ST中珠 "), "ST中珠")
@@ -1233,6 +1467,83 @@ class TestStockSkill(unittest.TestCase):
 
     def test_is_stock_name_alias_should_support_st_prefixed_alias_mapping(self):
         self.assertTrue(su.is_stock_name_alias("ST上海浦东发展银行", "浦发银行"))
+
+    def test_akshare_securities_should_return_invalid_argument_when_limit_not_positive(self):
+        result = su.query_akshare_securities(keyword="600000", limit=0)
+        self.assertFalse(result.get("success"))
+        self.assertEqual(result.get("error", {}).get("code"), su.STANDARD_ERROR_CODE_INVALID_ARGUMENT)
+
+    def test_akshare_securities_should_return_not_installed_when_dependency_missing(self):
+        with mock.patch.object(su, "_load_akshare_module", return_value=None):
+            result = su.query_akshare_securities(keyword="600000", limit=5)
+        self.assertFalse(result.get("success"))
+        self.assertEqual(result.get("error", {}).get("code"), su.STANDARD_ERROR_CODE_AKSHARE_NOT_INSTALLED)
+
+    def test_akshare_securities_should_normalize_standard_fields(self):
+        class _FakeFrame:
+            def to_dict(self, orient):
+                self._ = orient
+                return [
+                    {
+                        "代码": "600000",
+                        "名称": "浦发银行",
+                        "市场": "SH",
+                        "更新时间": "2026-03-10 10:06:00",
+                        "最新价": "10.21",
+                        "涨跌幅": "1.23",
+                        "换手率": "0.88",
+                        "量比": "1.56",
+                        "市盈率-动态": "6.10",
+                        "市净率": "0.52",
+                        "成交额": "123456789",
+                        "成交量": "987654",
+                    }
+                ]
+
+        class _FakeAk:
+            @staticmethod
+            def stock_zh_a_spot_em():
+                return _FakeFrame()
+
+        with mock.patch.object(su, "_load_akshare_module", return_value=_FakeAk()):
+            result = su.query_akshare_securities(keyword="600000", limit=5)
+
+        self.assertTrue(result.get("success"))
+        item = result.get("data", {}).get("items", [])[0]
+        self.assertEqual(item.get("symbol"), "600000")
+        self.assertEqual(item.get("name"), "浦发银行")
+        self.assertEqual(item.get("market"), "SH")
+        self.assertEqual(item.get("trade_date"), "2026-03-10")
+        self.assertEqual(item.get("last_price"), 10.21)
+        self.assertEqual(item.get("change_percent"), 1.23)
+
+    def test_akshare_quote_should_validate_symbol_format(self):
+        result = su.query_akshare_quote("ABC")
+        self.assertFalse(result.get("success"))
+        self.assertEqual(result.get("error", {}).get("code"), su.STANDARD_ERROR_CODE_INVALID_ARGUMENT)
+
+    def test_akshare_quote_should_return_exact_symbol_quote(self):
+        fake_result = {
+            "success": True,
+            "error": {},
+            "meta": {"provider": "akshare", "endpoint": "stock_zh_a_spot_em"},
+            "data": {
+                "items": [
+                    {"symbol": "600001", "name": "邯郸钢铁"},
+                    {"symbol": "600000", "name": "浦发银行", "last_price": 10.11},
+                ],
+                "total": 2,
+            },
+        }
+        with mock.patch.object(su, "query_akshare_securities", return_value=fake_result):
+            result = su.query_akshare_quote("600000")
+        self.assertTrue(result.get("success"))
+        self.assertEqual(result.get("data", {}).get("quote", {}).get("symbol"), "600000")
+        self.assertEqual(result.get("data", {}).get("quote", {}).get("name"), "浦发银行")
+        standardized = result.get("data", {}).get("standardized", {})
+        self.assertEqual(standardized.get("symbol"), "600000")
+        self.assertEqual(standardized.get("name"), "浦发银行")
+        self.assertEqual(standardized.get("price"), 10.11)
 
 
 if __name__ == "__main__":

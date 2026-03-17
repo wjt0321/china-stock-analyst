@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-purple.svg)
-![Tests](https://img.shields.io/badge/Tests-79%20Passed-success.svg)
+![Tests](https://img.shields.io/badge/Tests-94%20Passed-success.svg)
 
 **📈 A股短线交易分析助手 | Team-First 并行专家系统**
 
@@ -19,7 +19,9 @@
 
 > 一个专为 **Claude Code** 设计的 A 股分析技能，采用「**短线交易信号 + 营收质量**」双轨研判体系。
 
-当前版本已升级为 **Team-First** 架构：默认并行专家协作、前置数据真实性审计、强化复杂指令自动激活与不中断执行，并新增东方财富免费 API 数据接入能力。
+当前版本已升级为 **Team-First** 架构：默认并行专家协作、前置数据真实性审计、强化复杂指令自动激活与不中断执行；并完成 **AKShare 关键行情主数据接入** 与东方财富能力协同。
+
+> 🚨 **特别鸣谢：感谢 AKShare 社区提供开源数据接口与长期维护，本项目关键行情一致性能力由此显著提升。**
 
 ---
 
@@ -35,6 +37,7 @@
 | ⚖️ **主管冲突仲裁** | 对行业信号与事件冲击冲突进行降档仲裁，输出“可做 / 观察 / 回避”上限与原因 |
 | 🔍 **证据链可追溯** | 每条关键结论附结论值、来源 URL、分钟级时间戳与采纳/剔除依据 |
 | 🔁 **复杂指令连续性守护** | 并行节点支持隔离重试与汇总，不因局部问题回退为单线流程 |
+| 🧠 **AKShare 主数据源接入** | 将代码/名称/价格/交易日关键字段统一切换到 AKShare 主判定，显著降低错配与幻觉补全 |
 | 🛰️ **东方财富免费 API 接入** | 新增 `news-search / query / stock-screen` 三类外部能力，补强资讯、结构化金融数据与选股结果可信度 |
 | 🔐 **安全密钥加载** | 支持 `EASTMONEY_APIKEY` 环境变量优先，回退读取项目内 `.env.local/.env`，并默认忽略提交 |
 | 💸 **免费额度治理** | 内置 50 次/日配额控制、关键性门控、缓存去重与空结果引导，优先把额度用在关键数据查询 |
@@ -64,6 +67,18 @@ python -m unittest tests/test_stock_skill.py -v
 
 当前测试结果：**79 个用例全部通过** ✅
 
+### AKShare 依赖安装（必做）
+
+```bash
+pip install -r requirements.txt
+```
+
+项目已在依赖中内置：
+
+```txt
+akshare>=1.16.90,<2
+```
+
 ### 东方财富 API 配置（必做）
 
 1. 到东方财富 Skills 页面申请你自己的 API Key（请勿使用他人密钥）。
@@ -79,6 +94,41 @@ EASTMONEY_ENDPOINT_STOCK_SCREEN=/stock-screen
 
 3. 也可直接使用系统环境变量 `EASTMONEY_APIKEY`，其优先级高于 `.env.local/.env`。
 4. 仓库已提供 `.env.example` 模板，且 `.gitignore` 默认忽略 `.env` 与 `.env.local`，避免密钥泄露。
+
+---
+
+## 🔌 AKShare 接入说明（v2.4.0）
+
+### 接入目标
+
+- 解决“股票代码、名称、价格不一致”的高频问题
+- 减少通用检索噪声与模型自由补全导致的错配
+- 建立“先校验后分析”的硬门禁链路
+
+### 接入策略
+
+- **主来源切换**：`symbol/name/price/trade_date` 关键字段优先来自 AKShare
+- **来源优先级**：`akshare > eastmoney_query > web_search`
+- **职责拆分**：Web 检索仅用于资讯补充，不再主判定关键行情字段
+- **回退策略**：AKShare 不可用时返回结构化失败信息并触发阻断，不做隐式幻觉补值
+
+### 关键实现点
+
+- `scripts/stock_utils.py`
+  - 新增 AKShare 证券与行情查询封装
+  - 新增标准化输出字段（`symbol/name/price/trade_date`）
+  - 新增统一错误码（依赖缺失、空结果、参数错误、接口异常）
+- `scripts/generate_report.py`
+  - 新增代码↔名称一致性、价格有效性、交易日时效性门禁
+  - 任一失败即阻断后续结论生成，并返回结构化修复建议
+- `scripts/team_router.py`
+  - 透传 AKShare 元信息（来源函数、抓取时间、校验结论、失败原因码）
+  - 统一失败原因码与用户可读提示
+
+### 报告侧变化
+
+- 新增/增强“数据真实性鉴别结果”与“数据源元信息”展示
+- 展示来源函数、抓取时间、校验结论、失败原因码、修复建议
 
 ---
 
@@ -225,7 +275,7 @@ python -m unittest tests/test_stock_skill.py -v
 - 舆情降噪与评分封顶
 - 新增专家与主管仲裁
 - 复杂请求端到端闭环验证
-- 当前回归测试总量：**79 项（全部通过）**
+- 当前回归测试总量：**94 项（全部通过）**
 
 ---
 
@@ -236,6 +286,23 @@ python -m unittest tests/test_stock_skill.py -v
 ---
 
 ## 📅 更新日志
+
+### v2.4.0 (2026-03-17)
+
+- 发布 Release/Tag：`2.4.0`
+- **AKShare 主数据源接入完成**：
+  - 关键字段 `symbol/name/price/trade_date` 切换为 AKShare 主判定
+  - 新增标准化字段结构与统一错误码，减少跨来源字段漂移
+- **真实性门禁升级**：
+  - 分析前强制执行代码↔名称一致性、价格有效性、交易日时效校验
+  - 任一失败立即阻断流程，返回结构化修复建议
+- **来源治理升级**：
+  - Web 检索降级为资讯补充，不再用于关键行情字段主判定
+  - 增加来源优先级、失败原因码与用户提示映射
+- **路由与报告可追溯增强**：
+  - 报告新增来源函数、抓取时间、校验结论与失败原因码展示
+- 测试扩展至 **94 项并全部通过**
+- 再次感谢 **AKShare** 开源社区对数据能力建设的支持
 
 ### v2.3.1 (2026-03-14)
 

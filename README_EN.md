@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-purple.svg)
-![Tests](https://img.shields.io/badge/Tests-79%20Passed-success.svg)
+![Tests](https://img.shields.io/badge/Tests-94%20Passed-success.svg)
 
 **A-Share Short-term Trading Analysis Assistant | Team-First Parallel Expert System**
 
@@ -19,7 +19,9 @@
 
 > A specialized A-share analysis skill designed for **Claude Code**, featuring a **"Short-term Trading Signals + Revenue Quality"** dual-track assessment system.
 
-The current version has been upgraded to a **Team-First** architecture: default parallel expert collaboration, front-loaded data authenticity audit, enhanced automatic activation for complex instructions with non-interrupting execution, and new East Money free API data integration capabilities.
+The current version has been upgraded to a **Team-First** architecture: default parallel expert collaboration, front-loaded data authenticity audit, enhanced automatic activation for complex instructions with non-interrupting execution, and now includes **AKShare as the primary quote data source** working together with East Money capabilities.
+
+> 🚨 **Special Thanks: We sincerely appreciate the AKShare open-source community for sharing and maintaining high-quality data interfaces that make this project possible.**
 
 ---
 
@@ -35,6 +37,7 @@ The current version has been upgraded to a **Team-First** architecture: default 
 | **Supervisor Conflict Arbitration** | Downgrades recommendations when industry signals conflict with event impacts, outputs "Actionable / Watch / Avoid" upper limits with reasons |
 | **Traceable Evidence Chain** | Each key conclusion includes conclusion value, source URL, minute-level timestamp, and adoption/rejection basis |
 | **Complex Instruction Continuity Guard** | Parallel nodes support isolated retry and aggregation, never falling back to single-line flow due to local issues |
+| **AKShare Primary Data Source** | Core fields (`symbol/name/price/trade_date`) are now determined by AKShare first to reduce mismatch and hallucinated completion |
 | **East Money Free API Integration** | Three new external capabilities: `news-search / query / stock-screen`, enhancing news, structured financial data, and stock screening credibility |
 | **Secure Key Loading** | Supports `EASTMONEY_APIKEY` environment variable priority, fallback to project `.env.local/.env`, ignored by default in commits |
 | **Free Quota Management** | Built-in 50 requests/day quota control, critical gating, cache deduplication, and empty result guidance to prioritize key data queries |
@@ -62,7 +65,19 @@ Copy the project to Claude Code skills directory:
 python -m unittest tests/test_stock_skill.py -v
 ```
 
-Current test results: **79 test cases all passed**
+Current test results: **94 test cases all passed**
+
+### AKShare Dependency Installation (Required)
+
+```bash
+pip install -r requirements.txt
+```
+
+The project now includes:
+
+```txt
+akshare>=1.16.90,<2
+```
 
 ### East Money API Configuration (Required)
 
@@ -79,6 +94,41 @@ EASTMONEY_ENDPOINT_STOCK_SCREEN=/stock-screen
 
 3. You can also use system environment variable `EASTMONEY_APIKEY`, which takes priority over `.env.local/.env`.
 4. The repository provides `.env.example` template, and `.gitignore` excludes `.env` and `.env.local` by default to prevent key leakage.
+
+---
+
+## AKShare Integration Details (v2.4.0)
+
+### Why this integration
+
+- Fix recurring mismatches between stock code, stock name, and price
+- Reduce weak-web-source noise and model-side free completion
+- Enforce a hard “validate-before-analyze” gate
+
+### Integration strategy
+
+- **Primary source switch**: key fields (`symbol/name/price/trade_date`) now come from AKShare first
+- **Source priority**: `akshare > eastmoney_query > web_search`
+- **Responsibility split**: Web search is retained only for news/background enrichment
+- **Fallback behavior**: when AKShare is unavailable, the system returns structured failure and blocks conclusion generation instead of silently fabricating values
+
+### Implementation highlights
+
+- `scripts/stock_utils.py`
+  - Added AKShare security/quote wrappers
+  - Added standardized output fields (`symbol/name/price/trade_date`)
+  - Added unified error codes (missing dependency, empty result, invalid arguments, API failure)
+- `scripts/generate_report.py`
+  - Added identity consistency, price validity, and trading-day timeliness gates
+  - Any failure blocks downstream conclusion and returns structured repair guidance
+- `scripts/team_router.py`
+  - Added AKShare metadata passthrough (source function, fetched timestamp, validation conclusion, reason codes)
+  - Unified reason codes and user-facing tips
+
+### Report-level changes
+
+- Enhanced “Data Authenticity Verification” and “Data Source Metadata”
+- Added source function, fetched timestamp, validation result, reason codes, and repair suggestions
 
 ---
 
@@ -225,7 +275,7 @@ Test coverage includes:
 - Sentiment noise reduction and score capping
 - New experts and supervisor arbitration
 - Complex request end-to-end closed-loop verification
-- Current regression test total: **79 items (all passed)**
+- Current regression test total: **94 items (all passed)**
 
 ---
 
@@ -236,6 +286,23 @@ This project is licensed under the **MIT License**. See [LICENSE](LICENSE) for d
 ---
 
 ## Changelog
+
+### v2.4.0 (2026-03-17)
+
+- Release/Tag: `2.4.0`
+- **AKShare primary source integration completed**
+  - Core fields `symbol/name/price/trade_date` now use AKShare as the main decision source
+  - Standardized field schema and unified error codes added to reduce cross-source drift
+- **Authenticity gate upgrades**
+  - Enforced pre-analysis checks: code-name consistency, price validity, and trading-day timeliness
+  - Any failed check blocks the pipeline and returns structured repair suggestions
+- **Source-governance upgrades**
+  - Web search is downgraded to supplementary news usage only
+  - Added source-priority control, reason codes, and user guidance mapping
+- **Routing and report traceability enhancements**
+  - Reports now include source function, fetched timestamp, validation conclusions, and reason codes
+- Tests expanded to **94 cases, all passed**
+- Special thanks again to the **AKShare** open-source community
 
 ### v2.3.1 (2026-03-14)
 

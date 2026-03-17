@@ -5,6 +5,7 @@ import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from stock_utils import query_akshare_quote, validate_stock_code
 
 
 TEAM_TRIGGER_KEYWORDS = [
@@ -51,6 +52,20 @@ INTENT_KEYWORDS = {
     "news-search": ["资讯", "新闻", "快讯", "公告", "研报", "舆情", "事件驱动"],
     "query": ["行情", "资金流向", "财务", "估值", "指标", "主力净流入", "成交额"],
     "stock-screen": ["选股", "筛选", "股票池", "低价股", "高增长", "量价齐升", "策略筛选"],
+}
+FAILURE_REASON_CODE_REQUEST_LIMIT_EXCEEDED = "REQUEST_LIMIT_EXCEEDED"
+FAILURE_REASON_CODE_TIME_RANGE_EXCEEDED = "TIME_RANGE_EXCEEDED"
+FAILURE_REASON_CODE_TARGET_REQUIRED = "TARGET_REQUIRED"
+FAILURE_REASON_CODE_INTENT_NOT_MATCHED = "INTENT_NOT_MATCHED"
+FAILURE_REASON_CODE_DUPLICATE_REQUEST = "DUPLICATE_REQUEST"
+FAILURE_REASON_CODE_AKSHARE_METADATA_UNAVAILABLE = "AKSHARE_METADATA_UNAVAILABLE"
+FAILURE_REASON_TIPS = {
+    FAILURE_REASON_CODE_REQUEST_LIMIT_EXCEEDED: "请降低返回条数（建议<=50）后重试。",
+    FAILURE_REASON_CODE_TIME_RANGE_EXCEEDED: "请缩小时间范围（建议<=180天）后重试。",
+    FAILURE_REASON_CODE_TARGET_REQUIRED: "请补充股票代码或股票名称后再发起请求。",
+    FAILURE_REASON_CODE_INTENT_NOT_MATCHED: "未识别到东财意图，已降级为本地分析流程。",
+    FAILURE_REASON_CODE_DUPLICATE_REQUEST: "请求过于频繁，请稍后重试或补充差异化筛选条件。",
+    FAILURE_REASON_CODE_AKSHARE_METADATA_UNAVAILABLE: "AKShare 元信息暂不可用，已自动降级为东财/本地流程。",
 }
 
 PRECONFIGURED_EXPERT_AGENTS = {
@@ -262,6 +277,21 @@ def route_eastmoney_intent(user_request: str, stock_code: str = "", stock_name: 
     route = _classify_eastmoney_intent(normalized)
     gate = _build_critical_gate(route, normalized, stock_code=stock_code, stock_name=stock_name)
     cache_result = _apply_intent_cache(route, gate, normalized)
+    resolved_code = _resolve_stock_code_for_router(stock_code, request)
+    akshare_passthrough = _build_akshare_passthrough_meta(resolved_code, stock_name)
+    if not akshare_passthrough.get("validation_passed", True):
+        gate["passed"] = False if gate.get("blocked_by_guardrail") else gate.get("passed", True)
+        if akshare_passthrough.get("failure_code"):
+            _append_guardrail_failure(
+                gate,
+                code=akshare_passthrough.get("failure_code"),
+                message=akshare_passthrough.get("validation_conclusion", "AKShare 元信息校验未通过"),
+            )
+    fallback_mode = (
+        gate.get("blocked_by_guardrail")
+        or route.get("intent_category", "none") == "none"
+        or (not akshare_passthrough.get("validation_passed", True))
+    )
     route_result = {
         "request": request,
         "normalized_request": normalized,
@@ -270,8 +300,9 @@ def route_eastmoney_intent(user_request: str, stock_code: str = "", stock_name: 
         "matched_keywords": route.get("matched_keywords", []),
         "intent_confidence": route.get("intent_confidence", 0.0),
         "critical_gate": gate,
+        "akshare_passthrough": akshare_passthrough,
         "cache": cache_result,
-        "fallback_mode": False,
+        "fallback_mode": bool(fallback_mode),
         "local_saved": False,
         "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -304,26 +335,46 @@ def _classify_eastmoney_intent(request: str) -> dict:
 
 def _build_critical_gate(route: dict, request: str, stock_code: str = "", stock_name: str = "") -> dict:
     reasons = []
+    reason_codes = []
+    user_tips = []
     blocked = False
     requested_limit = _extract_request_limit(request)
     requested_days = _extract_time_range_days(request)
     intent = route.get("intent_category", "none")
     if requested_limit and requested_limit > INTENT_REQUEST_LIMIT_MAX:
         blocked = True
-        reasons.append(f"返回数量超限({requested_limit}>{INTENT_REQUEST_LIMIT_MAX})")
+        _append_guardrail_failure(
+            gate={"reasons": reasons, "reason_codes": reason_codes, "user_tips": user_tips},
+            code=FAILURE_REASON_CODE_REQUEST_LIMIT_EXCEEDED,
+            message=f"返回数量超限({requested_limit}>{INTENT_REQUEST_LIMIT_MAX})",
+        )
     if requested_days and requested_days > INTENT_TIME_RANGE_MAX_DAYS:
         blocked = True
-        reasons.append(f"时间范围超限({requested_days}>{INTENT_TIME_RANGE_MAX_DAYS}天)")
+        _append_guardrail_failure(
+            gate={"reasons": reasons, "reason_codes": reason_codes, "user_tips": user_tips},
+            code=FAILURE_REASON_CODE_TIME_RANGE_EXCEEDED,
+            message=f"时间范围超限({requested_days}>{INTENT_TIME_RANGE_MAX_DAYS}天)",
+        )
     has_target = bool(stock_code) or bool(stock_name) or bool(re.findall(r"(?<!\d)[036]\d{5}(?!\d)", request))
     if intent in {"news-search", "query"} and not has_target:
         blocked = True
-        reasons.append("缺少标的约束(股票代码/名称)")
+        _append_guardrail_failure(
+            gate={"reasons": reasons, "reason_codes": reason_codes, "user_tips": user_tips},
+            code=FAILURE_REASON_CODE_TARGET_REQUIRED,
+            message="缺少标的约束(股票代码/名称)",
+        )
     if intent == "none":
-        reasons.append("未命中东财意图，降级本地流程")
+        _append_guardrail_failure(
+            gate={"reasons": reasons, "reason_codes": reason_codes, "user_tips": user_tips},
+            code=FAILURE_REASON_CODE_INTENT_NOT_MATCHED,
+            message="未命中东财意图，降级本地流程",
+        )
     return {
         "passed": not blocked,
         "blocked_by_guardrail": blocked,
         "reasons": reasons,
+        "reason_codes": reason_codes,
+        "user_tips": user_tips,
         "requested_limit": requested_limit,
         "requested_time_range_days": requested_days,
         "fallback_action": "use_local_analysis_only" if blocked or intent == "none" else "allow_external_call",
@@ -377,7 +428,11 @@ def _apply_intent_cache(route: dict, gate: dict, normalized_request: str) -> dic
                 gate["passed"] = False
                 gate["blocked_by_guardrail"] = True
                 gate["fallback_action"] = "use_local_analysis_only"
-                _append_reason(gate["reasons"], f"命中重复请求阈值({hit_count}>{INTENT_DUPLICATE_THRESHOLD})")
+                _append_guardrail_failure(
+                    gate=gate,
+                    code=FAILURE_REASON_CODE_DUPLICATE_REQUEST,
+                    message=f"命中重复请求阈值({hit_count}>{INTENT_DUPLICATE_THRESHOLD})",
+                )
             items[cache_key] = {
                 "key": cache_key,
                 "request": normalized_request,
@@ -426,6 +481,69 @@ def _cleanup_intent_cache(items: dict, now: datetime) -> None:
 
 def _build_intent_cache_key(request: str) -> str:
     return hashlib.sha256((request or "").encode("utf-8")).hexdigest()
+
+
+def _append_guardrail_failure(gate: dict, code: str, message: str) -> None:
+    if not isinstance(gate, dict):
+        return
+    reasons = gate.setdefault("reasons", [])
+    reason_codes = gate.setdefault("reason_codes", [])
+    user_tips = gate.setdefault("user_tips", [])
+    if message and message not in reasons:
+        reasons.append(message)
+    if code and code not in reason_codes:
+        reason_codes.append(code)
+    tip = FAILURE_REASON_TIPS.get(code, "")
+    if tip and tip not in user_tips:
+        user_tips.append(tip)
+
+
+def _resolve_stock_code_for_router(stock_code: str, request: str) -> str:
+    explicit = (stock_code or "").strip()
+    if validate_stock_code(explicit):
+        return explicit
+    matched = re.findall(r"(?<!\d)[036]\d{5}(?!\d)", request or "")
+    return matched[0] if matched else ""
+
+
+def _build_akshare_passthrough_meta(stock_code: str, stock_name: str = "") -> dict:
+    fetched_at = _now_text()
+    base = {
+        "provider": "akshare",
+        "source_function": "stock_utils.query_akshare_quote",
+        "fetched_at": fetched_at,
+        "symbol": stock_code or "",
+        "stock_name": (stock_name or "").strip(),
+        "validation_passed": True,
+        "validation_conclusion": "AKShare 元信息校验通过",
+        "failure_code": "",
+        "failure_message": "",
+        "meta": {},
+    }
+    if not stock_code:
+        base["validation_passed"] = False
+        base["validation_conclusion"] = "缺少合法股票代码，无法抓取 AKShare 元信息"
+        base["failure_code"] = FAILURE_REASON_CODE_AKSHARE_METADATA_UNAVAILABLE
+        base["failure_message"] = "missing_stock_code"
+        return base
+    result = query_akshare_quote(stock_code)
+    base["meta"] = result.get("meta", {})
+    if result.get("success"):
+        quote = ((result.get("data") or {}).get("quote") or {})
+        base["quote_snapshot"] = {
+            "symbol": quote.get("symbol", stock_code),
+            "name": quote.get("name", ""),
+            "last_price": quote.get("last_price", ""),
+            "change_percent": quote.get("change_percent", ""),
+        }
+        return base
+    error = result.get("error", {})
+    code = str(error.get("code") or FAILURE_REASON_CODE_AKSHARE_METADATA_UNAVAILABLE)
+    base["validation_passed"] = False
+    base["validation_conclusion"] = "AKShare 元信息抓取失败，已降级"
+    base["failure_code"] = code
+    base["failure_message"] = str(error.get("message", "unknown_error"))
+    return base
 
 
 def _is_cache_alive(cache_item: dict, now: datetime) -> bool:

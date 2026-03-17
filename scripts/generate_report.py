@@ -33,6 +33,27 @@ FAILURE_CODE_IDENTITY_CODE_NAME_MISMATCH = "IDENTITY_CODE_NAME_MISMATCH"
 FAILURE_CODE_IDENTITY_NAME_CODE_CONFLICT = "IDENTITY_NAME_CODE_CONFLICT"
 FAILURE_CODE_PRICE_CURRENCY_UNIT_INCONSISTENT = "PRICE_CURRENCY_UNIT_INCONSISTENT"
 FAILURE_CODE_PRICE_CURRENCY_UNIT_EVIDENCE_INSUFFICIENT = "PRICE_CURRENCY_UNIT_EVIDENCE_INSUFFICIENT"
+FAILURE_CODE_PRICE_INVALID = "PRICE_INVALID"
+FAILURE_CODE_TRADING_DAY_STALE = "TRADING_DAY_STALE"
+FAILURE_REASON_TIPS = {
+    "REQUEST_LIMIT_EXCEEDED": "请降低返回条数（建议<=50）后重试。",
+    "TIME_RANGE_EXCEEDED": "请缩小时间范围（建议<=180天）后重试。",
+    "TARGET_REQUIRED": "请补充股票代码或股票名称后再发起请求。",
+    "INTENT_NOT_MATCHED": "未识别到东财意图，已降级为本地分析流程。",
+    "DUPLICATE_REQUEST": "请求过于频繁，请稍后重试或补充差异化筛选条件。",
+    "AKSHARE_METADATA_UNAVAILABLE": "AKShare 元信息暂不可用，已自动降级为东财/本地流程。",
+    "AKSHARE_NOT_INSTALLED": "未安装 AKShare，可安装后重试或继续使用本地降级流程。",
+    FAILURE_CODE_IDENTITY_CODE_INVALID: "请核对股票代码格式（A股6位代码）并重新采样。",
+    FAILURE_CODE_IDENTITY_EVIDENCE_INSUFFICIENT: "请补充至少两类可信来源的代码-名称证据。",
+    FAILURE_CODE_IDENTITY_CODE_NAME_MISMATCH: "请统一代码与名称映射，移除冲突来源后重试。",
+    FAILURE_CODE_IDENTITY_NAME_CODE_CONFLICT: "请确认同名主体对应唯一代码并重新抓取。",
+    FAILURE_CODE_PRICE_CURRENCY_UNIT_INCONSISTENT: "请统一价格币种与单位为人民币元/股。",
+    FAILURE_CODE_PRICE_CURRENCY_UNIT_EVIDENCE_INSUFFICIENT: "请补充至少两类来源的币种单位证据。",
+    FAILURE_CODE_PRICE_INVALID: "请校验价格是否处于 0.1~600.0 元区间。",
+    FAILURE_CODE_TRADING_DAY_STALE: "请重采请求交易日内的分钟级行情时间戳。",
+}
+PRICE_VALID_MIN = 0.1
+PRICE_VALID_MAX = 600.0
 
 
 def parse_search_results_to_report(
@@ -54,6 +75,7 @@ def parse_search_results_to_report(
     """
     report = {
         "stock_code": stock_code,
+        "request_date": request_date or "",
         "canonical_code": stock_code,
         "canonical_name": normalize_stock_name(stock_name) if stock_name else "",
         "price_info": {},
@@ -143,6 +165,7 @@ def parse_search_results_to_report(
     report["expert_outputs"]["event_hunter"] = event_output
     identity_gate = _run_expert_identity_gate(report)
     report["expert_identity_gate"] = identity_gate
+    report["repair_suggestions"] = identity_gate.get("repair_suggestions", [])
     report["authenticity_verification"] = identity_gate.get("authenticity_summary", {})
     if identity_gate.get("require_block"):
         report["process_block"] = _build_process_block(identity_gate)
@@ -1036,6 +1059,206 @@ def _validate_price_semantics(report: dict) -> dict:
     }
 
 
+def _validate_price_validity(report: dict) -> dict:
+    price_text = report.get("price_info", {}).get("price", "")
+    price_value = _safe_float(price_text)
+    reasons = []
+    reason_codes = []
+    if price_value <= 0:
+        reasons.append("缺失可用价格锚点")
+        reason_codes.append(FAILURE_CODE_PRICE_INVALID)
+    elif price_value < PRICE_VALID_MIN or price_value > PRICE_VALID_MAX:
+        reasons.append(
+            f"价格超出A股有效区间({PRICE_VALID_MIN:.1f}~{PRICE_VALID_MAX:.1f}元): {price_value:.2f}"
+        )
+        reason_codes.append(FAILURE_CODE_PRICE_INVALID)
+    evidences = []
+    for item in _pick_field_records(report.get("field_sources", {}), "price")[:3]:
+        evidences.append(
+            {
+                "conclusion": "价格有效性证据",
+                "value": item.get("value", "N/A"),
+                "source_url": item.get("source_url", "N/A"),
+                "timestamp": item.get("timestamp", "N/A"),
+                "source_category": item.get("source_category", "其他来源"),
+            }
+        )
+    return {
+        "passed": len(reason_codes) == 0,
+        "reasons": reasons,
+        "reason_codes": list(dict.fromkeys(reason_codes)),
+        "evidences": evidences,
+        "summary": {
+            "price": f"{price_value:.2f}" if price_value > 0 else "N/A",
+            "valid_range": f"{PRICE_VALID_MIN:.1f}-{PRICE_VALID_MAX:.1f}",
+        },
+    }
+
+
+def _validate_trading_day_timeliness(report: dict, request_date: str = "") -> dict:
+    strict_mode = bool(str(request_date or "").strip())
+    request_dt = _parse_day(request_date) or datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    timestamps = _collect_timestamps_for_timeliness(report)
+    reasons = []
+    reason_codes = []
+    evidences = []
+    for ts in sorted(timestamps, reverse=True)[:6]:
+        evidences.append(
+            {
+                "conclusion": "交易日时效证据",
+                "value": ts.strftime("%Y-%m-%d %H:%M"),
+                "source_url": "N/A",
+                "timestamp": ts.strftime("%Y-%m-%d %H:%M"),
+                "source_category": "时效校验",
+            }
+        )
+    if not strict_mode:
+        latest_value = max(timestamps).strftime("%Y-%m-%d %H:%M") if timestamps else "N/A"
+        return {
+            "passed": True,
+            "reasons": [],
+            "reason_codes": [],
+            "evidences": evidences,
+            "summary": {
+                "request_date": "N/A",
+                "latest_timestamp": latest_value,
+                "strict_mode": "off",
+            },
+        }
+    if not timestamps:
+        reasons.append("缺失可用于交易日时效校验的时间戳")
+        reason_codes.append(FAILURE_CODE_TRADING_DAY_STALE)
+    else:
+        latest_ts = max(timestamps)
+        if _is_trading_weekday(request_dt):
+            if latest_ts.date() != request_dt.date():
+                reasons.append(
+                    f"交易日时效不通过: 最新时间戳{latest_ts.strftime('%Y-%m-%d %H:%M')} 非请求交易日{request_dt.strftime('%Y-%m-%d')}"
+                )
+                reason_codes.append(FAILURE_CODE_TRADING_DAY_STALE)
+        else:
+            previous_trade_day = _previous_trading_day(request_dt)
+            if latest_ts.date() < previous_trade_day.date():
+                reasons.append(
+                    f"交易日时效不通过: 最新时间戳{latest_ts.strftime('%Y-%m-%d %H:%M')} 早于最近交易日{previous_trade_day.strftime('%Y-%m-%d')}"
+                )
+                reason_codes.append(FAILURE_CODE_TRADING_DAY_STALE)
+    latest_value = max(timestamps).strftime("%Y-%m-%d %H:%M") if timestamps else "N/A"
+    return {
+        "passed": len(reason_codes) == 0,
+        "reasons": reasons,
+        "reason_codes": list(dict.fromkeys(reason_codes)),
+        "evidences": evidences,
+        "summary": {
+            "request_date": request_dt.strftime("%Y-%m-%d"),
+            "latest_timestamp": latest_value,
+            "strict_mode": "on",
+        },
+    }
+
+
+def _collect_timestamps_for_timeliness(report: dict) -> list:
+    timestamps = []
+    for section in ("identity_mentions", "price_semantic_records"):
+        for item in report.get(section, []):
+            parsed = _parse_timestamp(item.get("timestamp", ""))
+            if parsed:
+                timestamps.append(parsed)
+    for record in _pick_field_records(report.get("field_sources", {}), "price"):
+        parsed = _parse_timestamp(record.get("timestamp", ""))
+        if parsed:
+            timestamps.append(parsed)
+    unique = []
+    seen = set()
+    for item in timestamps:
+        key = item.strftime("%Y-%m-%d %H:%M")
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
+
+
+def _is_trading_weekday(target_dt: datetime) -> bool:
+    return target_dt.weekday() < 5
+
+
+def _previous_trading_day(target_dt: datetime) -> datetime:
+    cursor = target_dt
+    while True:
+        cursor = cursor - timedelta(days=1)
+        if _is_trading_weekday(cursor):
+            return cursor
+
+
+def _build_repair_suggestions(failed_reason_codes: list, stock_code: str = "", canonical_name: str = "") -> list:
+    suggestions = []
+    seen = set()
+    identity_codes = {
+        FAILURE_CODE_IDENTITY_CODE_INVALID,
+        FAILURE_CODE_IDENTITY_EVIDENCE_INSUFFICIENT,
+        FAILURE_CODE_IDENTITY_CODE_NAME_MISMATCH,
+        FAILURE_CODE_IDENTITY_NAME_CODE_CONFLICT,
+    }
+    price_codes = {
+        FAILURE_CODE_PRICE_INVALID,
+        FAILURE_CODE_PRICE_CURRENCY_UNIT_INCONSISTENT,
+        FAILURE_CODE_PRICE_CURRENCY_UNIT_EVIDENCE_INSUFFICIENT,
+    }
+    for code in failed_reason_codes:
+        if code in seen:
+            continue
+        seen.add(code)
+        if code in identity_codes:
+            suggestions.append(
+                {
+                    "failure_code": code,
+                    "category": "code_name_consistency",
+                    "problem": "代码与名称映射不一致或证据不足",
+                    "required_action": "补充2类以上可信来源并统一代码名称映射",
+                    "steps": [
+                        f"固定标的锚点为 {stock_code or 'N/A'} / {normalize_stock_name(canonical_name) or 'N/A'}",
+                        "仅保留名称-代码强邻接证据（如 名称(代码)）",
+                        "移除跨标的混写与歧义文本后重新采样",
+                    ],
+                    "blocking": True,
+                }
+            )
+            continue
+        if code in price_codes:
+            suggestions.append(
+                {
+                    "failure_code": code,
+                    "category": "price_validity",
+                    "problem": "价格锚点无效或币种/单位口径不一致",
+                    "required_action": "统一价格口径为CNY元/股并校验价格区间",
+                    "steps": [
+                        "优先采集交易所或主流行情终端的当日最新价",
+                        "将币种统一到人民币，单位统一到元/股",
+                        f"校验价格在有效区间 {PRICE_VALID_MIN:.1f}~{PRICE_VALID_MAX:.1f} 元后再进入专家分析",
+                    ],
+                    "blocking": True,
+                }
+            )
+            continue
+        if code == FAILURE_CODE_TRADING_DAY_STALE:
+            suggestions.append(
+                {
+                    "failure_code": code,
+                    "category": "trading_day_timeliness",
+                    "problem": "关键行情时间戳不在请求交易日窗口内",
+                    "required_action": "重采样当日交易时段数据并补齐分钟级时间戳",
+                    "steps": [
+                        "按请求日期重新抓取交易时段内行情快照",
+                        "确保至少一条价格证据含 YYYY-MM-DD HH:MM 时间戳",
+                        "复核最新时间戳与请求交易日一致后再继续",
+                    ],
+                    "blocking": True,
+                }
+            )
+    return suggestions
+
+
 def _run_expert_identity_gate(report: dict) -> dict:
     stock_code = report.get("stock_code", "")
     canonical_price = _safe_float(report.get("price_info", {}).get("price"))
@@ -1043,23 +1266,33 @@ def _run_expert_identity_gate(report: dict) -> dict:
     failed_agents = []
     failed_reasons = []
     failed_reason_codes = []
+    request_date = report.get("request_date", "")
     identity_passed = validate_stock_code(stock_code)
     price_passed = canonical_price > 0
+    trading_day_passed = True
     if not identity_passed:
         failed_reasons.append(f"stock_code非法: {stock_code or 'N/A'}")
         failed_reason_codes.append(FAILURE_CODE_IDENTITY_CODE_INVALID)
-    if not price_passed:
-        failed_reasons.append("缺失可用价格锚点")
     identity_source_result = _validate_identity_with_sources(report, stock_code)
     if not identity_source_result.get("passed", True):
         identity_passed = False
         failed_reasons.extend(identity_source_result.get("reasons", []))
         failed_reason_codes.extend(identity_source_result.get("reason_codes", []))
+    price_validity_result = _validate_price_validity(report)
+    if not price_validity_result.get("passed", True):
+        price_passed = False
+        failed_reasons.extend(price_validity_result.get("reasons", []))
+        failed_reason_codes.extend(price_validity_result.get("reason_codes", []))
     price_semantic_result = _validate_price_semantics(report)
     if not price_semantic_result.get("passed", True):
         price_passed = False
         failed_reasons.extend(price_semantic_result.get("reasons", []))
         failed_reason_codes.extend(price_semantic_result.get("reason_codes", []))
+    trading_day_result = _validate_trading_day_timeliness(report, request_date=request_date)
+    if not trading_day_result.get("passed", True):
+        trading_day_passed = False
+        failed_reasons.extend(trading_day_result.get("reasons", []))
+        failed_reason_codes.extend(trading_day_result.get("reason_codes", []))
     expert_outputs = report.get("expert_outputs", {})
     for expert_key, expected_agent in expected_agents.items():
         output = expert_outputs.get(expert_key, {})
@@ -1086,17 +1319,21 @@ def _run_expert_identity_gate(report: dict) -> dict:
             price_passed = False
             failed_agents.append(expert_key)
             failed_reasons.append(f"{expert_key}缺失价格锚点")
-    passed = identity_passed and price_passed
+    passed = identity_passed and price_passed and trading_day_passed
     risks = []
     if not identity_passed:
         risks.append("身份一致性存在风险，需重采并复核代码名称映射")
     if not price_passed:
         risks.append("价格语义一致性存在风险，需核对币种与单位口径")
+    if not trading_day_passed:
+        risks.append("交易日时效校验未通过，需补齐当日有效行情时间戳")
     if not risks:
-        risks.append("未发现身份与价格真实性风险")
+        risks.append("未发现身份、价格与交易日时效真实性风险")
     all_evidences = []
     all_evidences.extend(identity_source_result.get("evidences", []))
+    all_evidences.extend(price_validity_result.get("evidences", []))
     all_evidences.extend(price_semantic_result.get("evidences", []))
+    all_evidences.extend(trading_day_result.get("evidences", []))
     latest_timestamp = "N/A"
     valid_timestamps = []
     for item in all_evidences:
@@ -1105,30 +1342,44 @@ def _run_expert_identity_gate(report: dict) -> dict:
             valid_timestamps.append(parsed)
     if valid_timestamps:
         latest_timestamp = max(valid_timestamps).strftime("%Y-%m-%d %H:%M")
+    unique_failed_reason_codes = list(dict.fromkeys(failed_reason_codes))
+    repair_suggestions = _build_repair_suggestions(
+        unique_failed_reason_codes,
+        stock_code=stock_code,
+        canonical_name=report.get("canonical_name", ""),
+    )
     return {
         "agent": "expert_identifier_agent",
         "passed": passed,
         "identity_passed": identity_passed,
         "price_passed": price_passed,
+        "trading_day_passed": trading_day_passed,
         "require_block": not passed,
         "failed_agents": sorted(set(failed_agents)),
         "failed_reasons": list(dict.fromkeys(failed_reasons)),
-        "failed_reason_codes": list(dict.fromkeys(failed_reason_codes)),
+        "failed_reason_codes": unique_failed_reason_codes,
         "next_action": "block_and_resample" if not passed else "continue",
         "checked_agents": list(expected_agents.values()),
         "checked_stock_code": stock_code or "N/A",
         "reference_price": f"{canonical_price:.2f}" if canonical_price > 0 else "N/A",
         "identity_source_evidences": identity_source_result.get("evidences", []),
+        "price_validity_evidences": price_validity_result.get("evidences", []),
         "price_semantic_evidences": price_semantic_result.get("evidences", []),
+        "trading_day_evidences": trading_day_result.get("evidences", []),
         "identity_source_summary": identity_source_result.get("summary", {}),
+        "price_validity_summary": price_validity_result.get("summary", {}),
         "price_semantic_summary": price_semantic_result.get("summary", {}),
+        "trading_day_summary": trading_day_result.get("summary", {}),
+        "repair_suggestions": repair_suggestions,
         "authenticity_summary": {
             "identity_status": "通过" if identity_passed else "未通过",
             "price_status": "通过" if price_passed else "未通过",
+            "trading_day_status": "通过" if trading_day_passed else "未通过",
             "source_count": len(all_evidences),
             "latest_timestamp": latest_timestamp,
             "risk_tips": risks,
-            "failed_reason_codes": list(dict.fromkeys(failed_reason_codes)),
+            "failed_reason_codes": unique_failed_reason_codes,
+            "repair_suggestions": repair_suggestions,
         },
     }
 
@@ -1140,6 +1391,7 @@ def _build_process_block(identity_gate: dict) -> dict:
         "blocked_stage": "supervisor_review",
         "reason": "；".join(failed) if failed else "专家身份与价格校验未通过",
         "next_action": "重采样并重新执行专家鉴别",
+        "repair_suggestions": identity_gate.get("repair_suggestions", []),
     }
 
 
@@ -1438,6 +1690,7 @@ def _build_single_stock_markdown(stock: dict, date_text: str) -> str:
         f"- 置信度：{_derive_confidence(stock)}",
     ]
     lines.extend(_build_data_audit_lines(stock))
+    lines.extend(_build_data_source_meta_lines(stock))
     lines.extend(_build_authenticity_verification_lines(stock))
     lines.extend(_build_expert_identity_lines(stock))
     lines.extend(_build_process_block_lines(stock))
@@ -1502,6 +1755,7 @@ def _build_stock_pool_markdown(stocks: list, date_text: str) -> str:
             f"- 置信度：{_derive_confidence(stock)}",
         ])
         lines.extend(_build_data_audit_lines(stock))
+        lines.extend(_build_data_source_meta_lines(stock))
         lines.extend(_build_authenticity_verification_lines(stock))
         lines.extend(_build_expert_identity_lines(stock))
         lines.extend(_build_process_block_lines(stock))
@@ -1691,6 +1945,7 @@ def _build_authenticity_verification_lines(stock: dict) -> list:
         return []
     identity_status = summary.get("identity_status", "通过" if gate.get("identity_passed", False) else "未通过")
     price_status = summary.get("price_status", "通过" if gate.get("price_passed", False) else "未通过")
+    trading_day_status = summary.get("trading_day_status", "通过" if gate.get("trading_day_passed", False) else "未通过")
     source_count = summary.get("source_count", 0)
     latest_timestamp = summary.get("latest_timestamp", "N/A")
     reason_codes = summary.get("failed_reason_codes", gate.get("failed_reason_codes", []))
@@ -1702,6 +1957,7 @@ def _build_authenticity_verification_lines(stock: dict) -> list:
         "",
         f"- 身份校验结果：{identity_status}",
         f"- 价格校验结果：{price_status}",
+        f"- 交易日时效结果：{trading_day_status}",
         f"- 来源证据条数：{source_count}",
         f"- 最近校验时间戳：{latest_timestamp}",
         (
@@ -1714,9 +1970,60 @@ def _build_authenticity_verification_lines(stock: dict) -> list:
     ]
     if reason_codes:
         lines.append(f"- 失败原因编码：{'; '.join(reason_codes)}")
+        mapped_tips = []
+        for code in reason_codes:
+            tip = FAILURE_REASON_TIPS.get(str(code), "")
+            if tip and tip not in mapped_tips:
+                mapped_tips.append(tip)
+        if mapped_tips:
+            lines.append(f"- 用户提示：{'；'.join(mapped_tips)}")
     risks = summary.get("risk_tips", [])
     if risks:
         lines.append(f"- 风险提示：{'; '.join(risks)}")
+    return lines
+
+
+def _build_data_source_meta_lines(stock: dict) -> list:
+    router = stock.get("eastmoney_router", {})
+    akshare_meta = (
+        stock.get("akshare_passthrough")
+        or stock.get("akshare_metadata")
+        or router.get("akshare_passthrough", {})
+    )
+    gate = router.get("critical_gate", {})
+    if not akshare_meta and not gate:
+        return []
+    lines = [
+        "",
+        "## 数据源元信息",
+        "",
+    ]
+    if akshare_meta:
+        lines.extend(
+            [
+                f"- 来源函数：{akshare_meta.get('source_function', 'N/A')}",
+                f"- 抓取时间：{akshare_meta.get('fetched_at', 'N/A')}",
+                f"- 校验结论：{akshare_meta.get('validation_conclusion', 'N/A')}",
+            ]
+        )
+    reason_codes = gate.get("reason_codes", [])
+    user_tips = gate.get("user_tips", [])
+    if reason_codes:
+        lines.append(f"- 路由失败原因码：{'; '.join(reason_codes)}")
+    if not user_tips and reason_codes:
+        mapped = []
+        for code in reason_codes:
+            tip = FAILURE_REASON_TIPS.get(str(code), "")
+            if tip and tip not in mapped:
+                mapped.append(tip)
+        user_tips = mapped
+    if user_tips:
+        lines.append(f"- 路由用户提示：{'；'.join(user_tips)}")
+    if akshare_meta and akshare_meta.get("failure_code"):
+        lines.append(f"- AKShare失败原因码：{akshare_meta.get('failure_code')}")
+        fallback_tip = FAILURE_REASON_TIPS.get(str(akshare_meta.get("failure_code")), "")
+        if fallback_tip:
+            lines.append(f"- AKShare用户提示：{fallback_tip}")
     return lines
 
 
@@ -1789,6 +2096,9 @@ def _build_process_block_lines(stock: dict) -> list:
         lines.append(f"- 阻断阶段：{process_block.get('blocked_stage', 'N/A')}")
         lines.append(f"- 阻断原因：{process_block.get('reason', 'N/A')}")
         lines.append(f"- 后续动作：{process_block.get('next_action', 'N/A')}")
+        suggestions = process_block.get("repair_suggestions", [])
+        if suggestions:
+            lines.append(f"- 修复建议数：{len(suggestions)}")
     return lines
 
 
