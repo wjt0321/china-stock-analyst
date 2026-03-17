@@ -1,15 +1,12 @@
 # A股分析辅助脚本
-# 关键字段主来源为 AKShare，Web 检索仅用于资讯补充
+# 关键字段主来源为 Web Search，东财用于结构化复核
 
 # 股票代码正则验证
 import json
-import importlib
 import logging
 import os
 import re
 import threading
-import time
-from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -69,46 +66,15 @@ EASTMONEY_STOCK_SCREEN_COLUMN_MAP = {
     "score": "排序值",
 }
 
-AKSHARE_MODULE_NAME = "akshare"
-AKSHARE_USE_PROXY_ENV = "AKSHARE_USE_PROXY"
-AKSHARE_MAX_RETRIES_ENV = "AKSHARE_MAX_RETRIES"
-AKSHARE_RETRY_BACKOFF_ENV = "AKSHARE_RETRY_BACKOFF_SECONDS"
-AKSHARE_PROXY_ENV_KEYS = (
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "ALL_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "all_proxy",
-)
-AKSHARE_MAX_RETRIES = max(int(os.getenv(AKSHARE_MAX_RETRIES_ENV, "3") or 3), 1)
-AKSHARE_RETRY_BACKOFF_SECONDS = max(float(os.getenv(AKSHARE_RETRY_BACKOFF_ENV, "0.8") or 0.8), 0.0)
 STANDARD_ERROR_CODE_INVALID_ARGUMENT = "INVALID_ARGUMENT"
-STANDARD_ERROR_CODE_AKSHARE_NOT_INSTALLED = "AKSHARE_NOT_INSTALLED"
-STANDARD_ERROR_CODE_AKSHARE_API_ERROR = "AKSHARE_API_ERROR"
 STANDARD_ERROR_CODE_DATA_EMPTY = "DATA_EMPTY"
 STANDARD_ERROR_CODE_DATA_SCHEMA_ERROR = "DATA_SCHEMA_ERROR"
 STANDARD_ERROR_CODE_INTERNAL_ERROR = "INTERNAL_ERROR"
-AKSHARE_SECURITY_FIELD_ALIASES = {
-    "symbol": ["代码", "股票代码", "symbol", "code"],
-    "name": ["名称", "股票简称", "stock_name", "name"],
-    "market": ["市场", "市场类型", "market"],
-    "trade_date": ["交易日期", "交易日", "日期", "更新时间", "trade_date", "date", "time"],
-    "last_price": ["最新价", "现价", "last_price", "price"],
-    "change_percent": ["涨跌幅", "change_percent", "pct_chg"],
-    "turnover_rate": ["换手率", "turnover_rate"],
-    "volume_ratio": ["量比", "volume_ratio"],
-    "pe_ttm": ["市盈率-动态", "市盈率TTM", "pe_ttm"],
-    "pb": ["市净率", "pb"],
-    "amount": ["成交额", "amount"],
-    "volume": ["成交量", "volume"],
-}
 QUERY_KEY_FIELD_SOURCE_PRIORITY = [
-    {"provider": "akshare", "priority": 1, "scope": "key_fields"},
-    {"provider": "eastmoney_query", "priority": 2, "scope": "query_fallback"},
-    {"provider": "web_search", "priority": 3, "scope": "news_supplement_only"},
+    {"provider": "web_search", "priority": 1, "scope": "primary_market_snapshot"},
+    {"provider": "eastmoney_query", "priority": 2, "scope": "structured_verification"},
 ]
-AKSHARE_QUERY_FIELD_MAP = {
+QUERY_FIELD_MAP = {
     "price": "last_price",
     "latest_price": "last_price",
     "last_price": "last_price",
@@ -217,71 +183,6 @@ def _safe_records(dataset: Any) -> list:
     return []
 
 
-def _load_akshare_module() -> Any:
-    try:
-        return importlib.import_module(AKSHARE_MODULE_NAME)
-    except ModuleNotFoundError:
-        return None
-
-
-def _is_akshare_proxy_enabled() -> bool:
-    raw = str(os.getenv(AKSHARE_USE_PROXY_ENV, "0") or "").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
-
-
-@contextmanager
-def _akshare_network_context():
-    if _is_akshare_proxy_enabled():
-        yield
-        return
-    snapshots = {key: os.environ.get(key) for key in AKSHARE_PROXY_ENV_KEYS}
-    try:
-        for key in AKSHARE_PROXY_ENV_KEYS:
-            os.environ.pop(key, None)
-        yield
-    finally:
-        for key, value in snapshots.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-
-
-def _classify_akshare_exception(error: Exception) -> str:
-    text = str(error or "").lower()
-    if "proxyerror" in text or "unable to connect to proxy" in text or "winerror 10061" in text:
-        return "PROXY_UNAVAILABLE"
-    if "remotedisconnected" in text or "remote end closed connection" in text:
-        return "REMOTE_DISCONNECTED"
-    if "name or service not known" in text or "gaierror" in text:
-        return "DNS_ERROR"
-    if "timed out" in text or "timeout" in text:
-        return "TIMEOUT"
-    if "ssl" in text or "tls" in text:
-        return "TLS_ERROR"
-    if "connection aborted" in text or "connection reset" in text:
-        return "CONNECTION_ABORTED"
-    return "NETWORK_ERROR"
-
-
-def _call_akshare_with_retries(fn, retries: int = AKSHARE_MAX_RETRIES):
-    attempts = max(int(retries or 1), 1)
-    last_error = None
-    for attempt in range(1, attempts + 1):
-        try:
-            return fn()
-        except Exception as error:
-            last_error = error
-            if attempt >= attempts:
-                raise
-            wait_seconds = AKSHARE_RETRY_BACKOFF_SECONDS * attempt
-            if wait_seconds > 0:
-                time.sleep(wait_seconds)
-    if last_error:
-        raise last_error
-    raise RuntimeError("AKShare 调用失败")
-
-
 def _normalize_market(value: Any) -> str:
     text = str(value or "").upper()
     if text in ("SH", "SSE", "1"):
@@ -319,237 +220,27 @@ def _normalize_trade_date_text(value: Any) -> str:
     return ""
 
 
-def _normalize_security_record(record: dict) -> dict:
-    normalized = {}
-    for field, aliases in AKSHARE_SECURITY_FIELD_ALIASES.items():
-        normalized[field] = _get_value_by_alias(record, aliases, "")
-    normalized["symbol"] = str(normalized.get("symbol") or "").strip()
-    normalized["name"] = str(normalized.get("name") or "").strip()
-    normalized["market"] = _normalize_market(normalized.get("market"))
-    normalized["trade_date"] = _normalize_trade_date_text(normalized.get("trade_date"))
-    for numeric_field in (
-        "last_price",
-        "change_percent",
-        "turnover_rate",
-        "volume_ratio",
-        "pe_ttm",
-        "pb",
-        "amount",
-        "volume",
-    ):
-        normalized[numeric_field] = _safe_number(normalized.get(numeric_field))
-    return normalized
-
-
-def _filter_security_records(records: list, keyword: str, limit: int) -> list:
-    if not records:
-        return []
-    normalized_keyword = str(keyword or "").strip().lower()
-    result = []
-    for record in records:
-        normalized = _normalize_security_record(record)
-        if not normalized.get("symbol"):
-            continue
-        if normalized_keyword:
-            code_hit = normalized_keyword in str(normalized.get("symbol", "")).lower()
-            name_hit = normalized_keyword in str(normalized.get("name", "")).lower()
-            if not code_hit and not name_hit:
-                continue
-        result.append(normalized)
-        if len(result) >= limit:
-            break
-    return result
-
-
-def _extract_bid_ask_mapped_row(records: list) -> dict:
-    items = [item for item in (records or []) if isinstance(item, dict)]
-    if not items:
-        return {}
-    if all("item" in row and "value" in row for row in items):
-        mapped = {}
-        for row in items:
-            key = str(row.get("item") or "").strip()
-            if not key:
-                continue
-            mapped[key] = row.get("value")
-        return mapped
-    return items[0]
-
-
-def _build_quote_from_bid_ask(records: list, symbol: str) -> dict:
-    row = _extract_bid_ask_mapped_row(records)
-    if not row:
-        return {}
-    last_price = _safe_number(
-        _get_value_by_alias(row, ["最新", "最新价", "现价", "最新价格", "price", "last_price"], "")
-    )
-    if last_price in (None, ""):
-        return {}
-    trade_date = _normalize_trade_date_text(
-        _get_value_by_alias(row, ["交易日期", "交易日", "日期", "更新时间", "time", "date"], "")
-    )
-    return {
-        "symbol": symbol,
-        "name": str(_get_value_by_alias(row, ["名称", "股票名称", "name", "stock_name"], "") or "").strip(),
-        "market": _normalize_market(_get_value_by_alias(row, ["市场", "market"], "")),
-        "trade_date": trade_date,
-        "last_price": last_price,
-        "change_percent": _safe_number(_get_value_by_alias(row, ["涨跌幅", "change_percent", "pct_chg"], "")),
-    }
-
-
-def _query_akshare_quote_direct(ak: Any, symbol: str) -> tuple[dict, dict]:
-    if not hasattr(ak, "stock_bid_ask_em"):
-        return {}, {}
-    def _fetch_bid_ask():
-        with _akshare_network_context():
-            return ak.stock_bid_ask_em(symbol=symbol)
-
-    raw = _call_akshare_with_retries(_fetch_bid_ask)
-    records = _safe_records(raw)
-    quote = _build_quote_from_bid_ask(records, symbol=symbol)
-    if not quote:
-        return {}, {}
-    meta = {"provider": AKSHARE_MODULE_NAME, "endpoint": "stock_bid_ask_em"}
-    return quote, meta
-
-
-def query_akshare_securities(keyword: str = "", limit: int = 20) -> dict:
-    normalized_limit = 20 if limit is None else int(limit)
-    if normalized_limit <= 0:
-        return _build_standard_error(
-            code=STANDARD_ERROR_CODE_INVALID_ARGUMENT,
-            message="limit 必须为正整数",
-            details={"limit": limit},
-        )
-    ak = _load_akshare_module()
-    if ak is None:
-        return _build_standard_error(
-            code=STANDARD_ERROR_CODE_AKSHARE_NOT_INSTALLED,
-            message="未安装 AKShare，请先执行 `pip install akshare`",
-            retryable=False,
-        )
-    try:
-        def _fetch_spot():
-            with _akshare_network_context():
-                return ak.stock_zh_a_spot_em()
-
-        raw = _call_akshare_with_retries(_fetch_spot)
-        records = _safe_records(raw)
-        if not records:
-            return _build_standard_error(
-                code=STANDARD_ERROR_CODE_DATA_EMPTY,
-                message="AKShare 未返回证券数据",
-                retryable=True,
-            )
-        matched = _filter_security_records(records, keyword=keyword, limit=normalized_limit)
-        if not matched:
-            return _build_standard_error(
-                code=STANDARD_ERROR_CODE_DATA_EMPTY,
-                message="未查询到匹配证券",
-                retryable=False,
-                details={"keyword": keyword},
-            )
-        return _build_standard_result(
-            data={"items": matched, "total": len(matched)},
-            meta={"provider": AKSHARE_MODULE_NAME, "endpoint": "stock_zh_a_spot_em"},
-        )
-    except AttributeError as error:
-        return _build_standard_error(
-            code=STANDARD_ERROR_CODE_DATA_SCHEMA_ERROR,
-            message="AKShare 接口不存在或版本不兼容",
-            retryable=False,
-            details={"error": str(error)},
-            meta={"provider": AKSHARE_MODULE_NAME},
-        )
-    except Exception as error:
-        error_type = _classify_akshare_exception(error)
-        return _build_standard_error(
-            code=STANDARD_ERROR_CODE_AKSHARE_API_ERROR,
-            message="AKShare 证券查询失败",
-            retryable=True,
-            details={
-                "error": str(error),
-                "error_type": error_type,
-                "keyword": keyword,
-                "max_retries": AKSHARE_MAX_RETRIES,
-            },
-            meta={"provider": AKSHARE_MODULE_NAME},
-        )
-
-
-def query_akshare_quote(symbol: str) -> dict:
-    normalized_symbol = str(symbol or "").strip()
-    if not validate_stock_code(normalized_symbol):
-        return _build_standard_error(
-            code=STANDARD_ERROR_CODE_INVALID_ARGUMENT,
-            message="symbol 必须是合法 A 股 6 位代码",
-            details={"symbol": symbol},
-        )
-    ak = _load_akshare_module()
-    if ak is None:
-        return _build_standard_error(
-            code=STANDARD_ERROR_CODE_AKSHARE_NOT_INSTALLED,
-            message="未安装 AKShare，请先执行 `pip install akshare`",
-            retryable=False,
-        )
-    try:
-        direct_quote, direct_meta = _query_akshare_quote_direct(ak, normalized_symbol)
-        if direct_quote:
-            standardized = {
-                "symbol": direct_quote.get("symbol", normalized_symbol),
-                "name": direct_quote.get("name", ""),
-                "price": direct_quote.get("last_price", ""),
-                "trade_date": direct_quote.get("trade_date", ""),
-            }
-            return _build_standard_result(
-                data={"quote": direct_quote, "standardized": standardized},
-                meta=direct_meta,
-            )
-    except Exception:
-        pass
-    result = query_akshare_securities(keyword=normalized_symbol, limit=1)
-    if not result.get("success"):
-        return result
-    quote = _as_list(_dig_path(result, [["data", "items"]], default=[]))
-    exact = [item for item in quote if str(item.get("symbol", "")) == normalized_symbol]
-    if not exact:
-        return _build_standard_error(
-            code=STANDARD_ERROR_CODE_DATA_EMPTY,
-            message="未查询到该证券实时行情",
-            retryable=False,
-            details={"symbol": normalized_symbol},
-            meta=result.get("meta"),
-        )
-    quote = exact[0]
-    standardized = {
-        "symbol": quote.get("symbol", normalized_symbol),
-        "name": quote.get("name", ""),
-        "price": quote.get("last_price", ""),
-        "trade_date": quote.get("trade_date", ""),
-    }
-    return _build_standard_result(
-        data={"quote": quote, "standardized": standardized},
-        meta=result.get("meta"),
-    )
-
-
 def _normalize_query_field_name(field: Any) -> str:
     return str(field or "").strip().lower()
 
 
-def _extract_key_fields_from_akshare_quote(quote: dict, requested_fields: list) -> dict:
-    if not isinstance(quote, dict):
+def _extract_key_fields_from_query_row(row: dict, requested_fields: list) -> dict:
+    if not isinstance(row, dict):
         return {}
     key_fields = {}
     for raw_field in requested_fields:
         field_name = str(raw_field or "").strip()
         if not field_name:
             continue
-        mapped_field = AKSHARE_QUERY_FIELD_MAP.get(_normalize_query_field_name(field_name), "")
+        mapped_field = QUERY_FIELD_MAP.get(_normalize_query_field_name(field_name), "")
+        normalized_field = _normalize_query_field_name(field_name)
         if not mapped_field:
-            continue
-        value = quote.get(mapped_field)
+            mapped_field = normalized_field
+        value = row.get(mapped_field)
+        if value in (None, "") and normalized_field != mapped_field:
+            value = row.get(normalized_field)
+        if value in (None, ""):
+            value = row.get(field_name)
         if value in (None, ""):
             continue
         key_fields[field_name] = value
@@ -569,31 +260,52 @@ def _pick_trade_date_from_source_timestamp(timestamp_text: str) -> str:
 def _build_standardized_key_fields(
     request_payload: dict,
     selected_key_fields: dict,
-    akshare_quote: dict,
+    query_row: dict,
     source_timestamp: str,
 ) -> dict:
     request_data = _as_dict(request_payload)
-    quote = _as_dict(akshare_quote)
+    row = _as_dict(query_row)
     price = (
         selected_key_fields.get("price")
         if "price" in selected_key_fields
         else selected_key_fields.get("latest_price", "")
     )
     trade_date = (
-        quote.get("trade_date")
+        row.get("trade_date")
         or _pick_trade_date_from_source_timestamp(source_timestamp)
         or datetime.now().strftime("%Y-%m-%d")
     )
     return {
         "symbol": str(
-            quote.get("symbol")
+            row.get("symbol")
             or request_data.get("stock_code")
             or request_data.get("symbol")
             or ""
         ),
-        "name": str(quote.get("name") or request_data.get("stock_name") or ""),
+        "name": str(row.get("name") or request_data.get("stock_name") or ""),
         "price": price,
         "trade_date": trade_date,
+    }
+
+
+def _build_data_quality_summary(selected_key_fields: dict, missing_fields: list, source_timestamp: str) -> dict:
+    required_fields = ["price"]
+    missing_required = [field for field in required_fields if field not in selected_key_fields]
+    quality_score = 100
+    if missing_fields:
+        quality_score -= min(len(missing_fields) * 12, 40)
+    if missing_required:
+        quality_score -= 35
+    if not source_timestamp:
+        quality_score -= 10
+    return {
+        "provider": "eastmoney_query",
+        "required_fields": required_fields,
+        "missing_required_fields": missing_required,
+        "missing_fields": list(missing_fields),
+        "source_timestamp_present": bool(source_timestamp),
+        "is_usable": len(missing_required) == 0,
+        "quality_score": max(0, quality_score),
     }
 
 
@@ -934,6 +646,14 @@ def eastmoney_news_search(
 def parse_eastmoney_news_search_response(resp: dict, request_payload: dict = None) -> dict:
     data = resp or {}
     meta = _extract_common_meta(data)
+    if not meta.get("success", False):
+        return _build_standard_error(
+            code=STANDARD_ERROR_CODE_INTERNAL_ERROR,
+            message=meta.get("message") or "东方财富资讯检索失败",
+            retryable=True,
+            details={"response_meta": meta, "request_payload": _desensitize_payload(request_payload or {})},
+            meta={"provider": "eastmoney", "endpoint": "news-search", **meta},
+        )
     rows = _as_list(
         _dig_path(
             data,
@@ -969,6 +689,7 @@ def parse_eastmoney_news_search_response(resp: dict, request_payload: dict = Non
         )
     empty_result = len(items) == 0
     return {
+        "success": True,
         "endpoint": "news-search",
         "meta": meta,
         "request_payload": _desensitize_payload(request_payload or {}),
@@ -1005,15 +726,25 @@ def eastmoney_query(
         timeout=timeout,
         retries=retries,
     )
-    akshare_result = {}
-    if validate_stock_code(stock_code):
-        akshare_result = query_akshare_quote(stock_code)
-    return parse_eastmoney_query_response(resp, request_payload=payload, akshare_result=akshare_result)
+    return parse_eastmoney_query_response(resp, request_payload=payload)
 
 
-def parse_eastmoney_query_response(resp: dict, request_payload: dict = None, akshare_result: dict = None) -> dict:
+def parse_eastmoney_query_response(resp: dict, request_payload: dict = None) -> dict:
     data = resp or {}
     meta = _extract_common_meta(data)
+    if not meta.get("success", False):
+        blocked_by_guardrail = _detect_large_range_blocked(data)
+        return _build_standard_error(
+            code=STANDARD_ERROR_CODE_INTERNAL_ERROR,
+            message=meta.get("message") or "东方财富结构化查询失败",
+            retryable=not blocked_by_guardrail,
+            details={
+                "response_meta": meta,
+                "request_payload": _desensitize_payload(request_payload or {}),
+                "blocked_by_guardrail": blocked_by_guardrail,
+            },
+            meta={"provider": "eastmoney", "endpoint": "query", **meta},
+        )
     data_root = _dig_path(data, [["data"], ["result", "data"], ["result", "result", "data"]], default={})
     records = _as_list(
         _dig_path(
@@ -1029,27 +760,27 @@ def parse_eastmoney_query_response(resp: dict, request_payload: dict = None, aks
     )
     requested_fields = _as_list((request_payload or {}).get("fields"))
     base_sample = _as_dict(records[0]) if records and isinstance(records[0], dict) else _as_dict(data_root)
-    eastmoney_key_fields = {field: base_sample.get(field) for field in requested_fields if field in base_sample}
-    selected_key_fields = dict(eastmoney_key_fields)
+    selected_key_fields = _extract_key_fields_from_query_row(base_sample, requested_fields)
     key_fields_provider = "eastmoney_query"
-    key_fields_priority = 2
-    akshare_quote = _as_dict(_dig_path(akshare_result or {}, [["data", "quote"]], default={}))
-    if (akshare_result or {}).get("success") and akshare_quote:
-        selected_key_fields = _extract_key_fields_from_akshare_quote(akshare_quote, requested_fields)
-        key_fields_provider = "akshare"
-        key_fields_priority = 1
+    key_fields_priority = 1
     missing_fields = [field for field in requested_fields if field not in selected_key_fields]
     blocked_by_guardrail = _detect_large_range_blocked(data)
     source_timestamp = _extract_source_timestamp(base_sample, fallback_text=json.dumps(base_sample, ensure_ascii=False))
     standardized_key_fields = _build_standardized_key_fields(
         request_payload=request_payload or {},
         selected_key_fields=selected_key_fields,
-        akshare_quote=akshare_quote,
+        query_row=base_sample,
+        source_timestamp=source_timestamp,
+    )
+    quality_summary = _build_data_quality_summary(
+        selected_key_fields=selected_key_fields,
+        missing_fields=missing_fields,
         source_timestamp=source_timestamp,
     )
     data_has_payload = isinstance(data_root, dict) and any(value not in (None, "", [], {}) for value in data_root.values())
     empty_result = not bool(records or data_has_payload)
     return {
+        "success": True,
         "endpoint": "query",
         "meta": meta,
         "request_payload": _desensitize_payload(request_payload or {}),
@@ -1063,8 +794,8 @@ def parse_eastmoney_query_response(resp: dict, request_payload: dict = None, aks
         "key_fields_source_priority": list(QUERY_KEY_FIELD_SOURCE_PRIORITY),
         "model_completion_forbidden": True,
         "supplemental_news_only": True,
-        "fallback_key_fields": eastmoney_key_fields if key_fields_provider == "akshare" else {},
         "source_timestamp": source_timestamp,
+        "data_quality_summary": quality_summary,
         "blocked_by_guardrail": blocked_by_guardrail,
         "guardrail_tip": EASTMONEY_BLOCKED_RESULT_TIP if blocked_by_guardrail else "",
         "empty_result": empty_result,
@@ -1072,16 +803,38 @@ def parse_eastmoney_query_response(resp: dict, request_payload: dict = None, aks
 
 
 def eastmoney_stock_screen(
-    conditions: dict,
+    conditions: dict = None,
+    query_text: str = "",
     sort_by: str = "",
     sort_order: str = "desc",
     limit: int = 50,
     timeout: int = 10,
     retries: int = 1,
+    **kwargs,
 ) -> dict:
+    query_alias = str(kwargs.get("query") or "").strip()
+    keyword_alias = str(kwargs.get("keyword") or "").strip()
+    sort_rule_alias = str(kwargs.get("sort_rule") or "").strip()
+    final_query_text = str(query_text or query_alias or keyword_alias).strip()
+    compiled_conditions = _compile_stock_screen_conditions(final_query_text)
+    merged_conditions = dict(compiled_conditions)
+    merged_conditions.update(_as_dict(conditions))
+    search_keyword = final_query_text or _build_stock_screen_keyword(merged_conditions)
+    final_sort_by = sort_by or sort_rule_alias
+    if not search_keyword:
+        return _build_standard_error(
+            code=STANDARD_ERROR_CODE_INVALID_ARGUMENT,
+            message="选股请求缺少有效关键词",
+            retryable=False,
+            details={"query_text": final_query_text, "conditions": merged_conditions},
+            meta={"provider": "eastmoney", "endpoint": "stock-screen"},
+        )
     payload = {
-        "conditions": _as_dict(conditions),
-        "sort_by": sort_by,
+        "question": search_keyword,
+        "query": search_keyword,
+        "keyword": search_keyword,
+        "conditions": merged_conditions,
+        "sort_by": final_sort_by,
         "sort_order": sort_order,
         "limit": max(min(int(limit or 50), 50), 1),
     }
@@ -1091,12 +844,60 @@ def eastmoney_stock_screen(
         timeout=timeout,
         retries=retries,
     )
-    return parse_eastmoney_stock_screen_response(resp, request_payload=payload)
+    parsed = parse_eastmoney_stock_screen_response(resp, request_payload=payload)
+    if parsed.get("success") and parsed.get("empty_result"):
+        relaxation_chain = []
+        price_only_conditions = {
+            key: merged_conditions.get(key)
+            for key in ("price_lte", "price_gte")
+            if key in merged_conditions
+        }
+        if price_only_conditions and price_only_conditions != merged_conditions:
+            relaxation_chain.append("price_only")
+            relaxed_payload = dict(payload)
+            relaxed_payload["conditions"] = price_only_conditions
+            relaxed_resp = post_eastmoney(
+                endpoint=EASTMONEY_ENDPOINT_STOCK_SCREEN,
+                payload=relaxed_payload,
+                timeout=timeout,
+                retries=retries,
+            )
+            parsed = parse_eastmoney_stock_screen_response(relaxed_resp, request_payload=relaxed_payload)
+        if parsed.get("success") and parsed.get("empty_result"):
+            relaxation_chain.append("keyword_only")
+            relaxed_payload = dict(payload)
+            relaxed_payload["conditions"] = {}
+            relaxed_resp = post_eastmoney(
+                endpoint=EASTMONEY_ENDPOINT_STOCK_SCREEN,
+                payload=relaxed_payload,
+                timeout=timeout,
+                retries=retries,
+            )
+            parsed = parse_eastmoney_stock_screen_response(relaxed_resp, request_payload=relaxed_payload)
+        if parsed.get("success"):
+            parsed["relaxation_chain"] = relaxation_chain
+    return parsed
 
 
 def parse_eastmoney_stock_screen_response(resp: dict, request_payload: dict = None) -> dict:
     data = resp or {}
     meta = _extract_common_meta(data)
+    if not meta.get("success", False):
+        message = meta.get("message") or "东方财富选股请求失败"
+        error_code = STANDARD_ERROR_CODE_INVALID_ARGUMENT if "参数校验失败" in message else STANDARD_ERROR_CODE_INTERNAL_ERROR
+        blocked_by_guardrail = _detect_large_range_blocked(data)
+        details = {
+            "response_meta": meta,
+            "request_payload": _desensitize_payload(request_payload or {}),
+            "blocked_by_guardrail": blocked_by_guardrail,
+        }
+        return _build_standard_error(
+            code=error_code,
+            message=message,
+            retryable=not blocked_by_guardrail,
+            details=details,
+            meta={"provider": "eastmoney", "endpoint": "stock-screen", **meta},
+        )
     columns = _as_list(
         _dig_path(
             data,
@@ -1155,6 +956,7 @@ def parse_eastmoney_stock_screen_response(resp: dict, request_payload: dict = No
         len(normalized_rows),
     )
     return {
+        "success": True,
         "endpoint": "stock-screen",
         "meta": meta,
         "request_payload": _desensitize_payload(request_payload or {}),
@@ -1169,6 +971,48 @@ def parse_eastmoney_stock_screen_response(resp: dict, request_payload: dict = No
             "total": int(total or 0),
         },
     }
+
+
+def _compile_stock_screen_conditions(query_text: str) -> dict:
+    text = str(query_text or "").strip()
+    if not text:
+        return {}
+    conditions = {}
+    lower_text = text.lower()
+    match_lte = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*元?\s*(?:以下|以内|低于|不高于|<=)", text)
+    if match_lte:
+        conditions["price_lte"] = float(match_lte.group(1))
+    match_gte = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*元?\s*(?:以上|高于|不少于|>=)", text)
+    if match_gte:
+        conditions["price_gte"] = float(match_gte.group(1))
+    if "低价股" in text and "price_lte" not in conditions:
+        conditions["price_lte"] = 10.0
+    if "高增长" in text or "成长" in text:
+        conditions["growth_hint"] = "high_growth"
+    if "量价齐升" in text:
+        conditions["volume_price_trend"] = "up"
+    if "主力净流入" in text or "资金流入" in text:
+        conditions["main_net_inflow"] = "positive"
+    if "换手率" in text:
+        conditions["turnover_focus"] = True
+    if "市盈率" in text and "低" in text:
+        conditions["pe_ttm_trend"] = "low"
+    if "st" in lower_text:
+        conditions["include_st"] = True
+    return conditions
+
+
+def _build_stock_screen_keyword(conditions: dict) -> str:
+    fields = _as_dict(conditions)
+    if not fields:
+        return ""
+    if "price_lte" in fields and float(fields.get("price_lte") or 0) > 0:
+        return f"{fields.get('price_lte')}元以下低价股"
+    if fields.get("growth_hint") == "high_growth":
+        return "高增长选股"
+    if fields.get("volume_price_trend") == "up":
+        return "量价齐升选股"
+    return "A股选股"
 
 
 def _compact_name_text(text: str) -> str:

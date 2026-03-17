@@ -41,8 +41,7 @@ FAILURE_REASON_TIPS = {
     "TARGET_REQUIRED": "请补充股票代码或股票名称后再发起请求。",
     "INTENT_NOT_MATCHED": "未识别到东财意图，已降级为本地分析流程。",
     "DUPLICATE_REQUEST": "请求过于频繁，请稍后重试或补充差异化筛选条件。",
-    "AKSHARE_METADATA_UNAVAILABLE": "AKShare 元信息暂不可用，已自动降级为东财/本地流程。",
-    "AKSHARE_NOT_INSTALLED": "未安装 AKShare，可安装后重试或继续使用本地降级流程。",
+    "SYMBOL_METADATA_UNAVAILABLE": "标的元信息暂不可用，已自动降级为东财/本地流程。",
     FAILURE_CODE_IDENTITY_CODE_INVALID: "请核对股票代码格式（A股6位代码）并重新采样。",
     FAILURE_CODE_IDENTITY_EVIDENCE_INSUFFICIENT: "请补充至少两类可信来源的代码-名称证据。",
     FAILURE_CODE_IDENTITY_CODE_NAME_MISMATCH: "请统一代码与名称映射，移除冲突来源后重试。",
@@ -1985,25 +1984,25 @@ def _build_authenticity_verification_lines(stock: dict) -> list:
 
 def _build_data_source_meta_lines(stock: dict) -> list:
     router = stock.get("eastmoney_router", {})
-    akshare_meta = (
-        stock.get("akshare_passthrough")
-        or stock.get("akshare_metadata")
-        or router.get("akshare_passthrough", {})
+    metadata = (
+        stock.get("metadata_passthrough")
+        or stock.get("symbol_metadata")
+        or router.get("metadata_passthrough", {})
     )
     gate = router.get("critical_gate", {})
-    if not akshare_meta and not gate:
+    if not metadata and not gate:
         return []
     lines = [
         "",
         "## 数据源元信息",
         "",
     ]
-    if akshare_meta:
+    if metadata:
         lines.extend(
             [
-                f"- 来源函数：{akshare_meta.get('source_function', 'N/A')}",
-                f"- 抓取时间：{akshare_meta.get('fetched_at', 'N/A')}",
-                f"- 校验结论：{akshare_meta.get('validation_conclusion', 'N/A')}",
+                f"- 来源函数：{metadata.get('source_function', 'N/A')}",
+                f"- 抓取时间：{metadata.get('fetched_at', 'N/A')}",
+                f"- 校验结论：{metadata.get('validation_conclusion', 'N/A')}",
             ]
         )
     reason_codes = gate.get("reason_codes", [])
@@ -2019,11 +2018,11 @@ def _build_data_source_meta_lines(stock: dict) -> list:
         user_tips = mapped
     if user_tips:
         lines.append(f"- 路由用户提示：{'；'.join(user_tips)}")
-    if akshare_meta and akshare_meta.get("failure_code"):
-        lines.append(f"- AKShare失败原因码：{akshare_meta.get('failure_code')}")
-        fallback_tip = FAILURE_REASON_TIPS.get(str(akshare_meta.get("failure_code")), "")
+    if metadata and metadata.get("failure_code"):
+        lines.append(f"- 元信息失败原因码：{metadata.get('failure_code')}")
+        fallback_tip = FAILURE_REASON_TIPS.get(str(metadata.get("failure_code")), "")
         if fallback_tip:
-            lines.append(f"- AKShare用户提示：{fallback_tip}")
+            lines.append(f"- 元信息用户提示：{fallback_tip}")
     return lines
 
 

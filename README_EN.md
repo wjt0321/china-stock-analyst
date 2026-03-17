@@ -19,9 +19,7 @@
 
 > A specialized A-share analysis skill designed for **Claude Code**, featuring a **"Short-term Trading Signals + Revenue Quality"** dual-track assessment system.
 
-The current version has been upgraded to a **Team-First** architecture: default parallel expert collaboration, front-loaded data authenticity audit, enhanced automatic activation for complex instructions with non-interrupting execution, and now includes **AKShare as the primary quote data source** working together with East Money capabilities.
-
-> 🚨 **Special Thanks: We sincerely appreciate the AKShare open-source community for sharing and maintaining high-quality data interfaces that make this project possible.**
+The current version has been upgraded to a **Team-First** architecture: default parallel expert collaboration, front-loaded data authenticity audit, enhanced automatic activation for complex instructions with non-interrupting execution, and now uses a **Web Search primary path + East Money structured verification** model.
 
 ---
 
@@ -37,7 +35,7 @@ The current version has been upgraded to a **Team-First** architecture: default 
 | **Supervisor Conflict Arbitration** | Downgrades recommendations when industry signals conflict with event impacts, outputs "Actionable / Watch / Avoid" upper limits with reasons |
 | **Traceable Evidence Chain** | Each key conclusion includes conclusion value, source URL, minute-level timestamp, and adoption/rejection basis |
 | **Complex Instruction Continuity Guard** | Parallel nodes support isolated retry and aggregation, never falling back to single-line flow due to local issues |
-| **AKShare Primary Data Source** | Core fields (`symbol/name/price/trade_date`) are now determined by AKShare first to reduce mismatch and hallucinated completion |
+| **Dual-path Data Strategy** | Build candidates from Web Search first, then verify key fields via East Money to balance quota and accuracy |
 | **East Money Free API Integration** | Three new external capabilities: `news-search / query / stock-screen`, enhancing news, structured financial data, and stock screening credibility |
 | **Secure Key Loading** | Supports `EASTMONEY_APIKEY` environment variable priority, fallback to project `.env.local/.env`, ignored by default in commits |
 | **Free Quota Management** | Built-in 50 requests/day quota control, critical gating, cache deduplication, and empty result guidance to prioritize key data queries |
@@ -67,18 +65,6 @@ python -m unittest tests/test_stock_skill.py -v
 
 Current test results: **94 test cases all passed**
 
-### AKShare Dependency Installation (Required)
-
-```bash
-pip install -r requirements.txt
-```
-
-The project now includes:
-
-```txt
-akshare>=1.16.90,<2
-```
-
 ### East Money API Configuration (Required)
 
 1. Apply for your own API Key from the East Money Skills page (do not use others' keys).
@@ -97,7 +83,7 @@ EASTMONEY_ENDPOINT_STOCK_SCREEN=/stock-screen
 
 ---
 
-## AKShare Integration Details (v2.4.0)
+## Data Integration Details (v2.4.0)
 
 ### Why this integration
 
@@ -107,22 +93,22 @@ EASTMONEY_ENDPOINT_STOCK_SCREEN=/stock-screen
 
 ### Integration strategy
 
-- **Primary source switch**: key fields (`symbol/name/price/trade_date`) now come from AKShare first
-- **Source priority**: `akshare > eastmoney_query > web_search`
-- **Responsibility split**: Web search is retained only for news/background enrichment
-- **Fallback behavior**: when AKShare is unavailable, the system returns structured failure and blocks conclusion generation instead of silently fabricating values
+- **Primary source switch**: key fields are built from Web Search candidates, then verified by East Money query
+- **Source priority**: `web_search > eastmoney_query`
+- **Responsibility split**: Web Search for coverage/candidates, East Money for structured key-field verification
+- **Fallback behavior**: when East Money verification is unavailable, mark result as "not structurally verified" instead of fabricating validated values
 
 ### Implementation highlights
 
 - `scripts/stock_utils.py`
-  - Added AKShare security/quote wrappers
+  - Added dual-path field alignment and data quality summary
   - Added standardized output fields (`symbol/name/price/trade_date`)
-  - Added unified error codes (missing dependency, empty result, invalid arguments, API failure)
+  - Added unified error codes (empty result, invalid arguments, API failure)
 - `scripts/generate_report.py`
   - Added identity consistency, price validity, and trading-day timeliness gates
   - Any failure blocks downstream conclusion and returns structured repair guidance
 - `scripts/team_router.py`
-  - Added AKShare metadata passthrough (source function, fetched timestamp, validation conclusion, reason codes)
+  - Added symbol metadata passthrough (source function, fetched timestamp, validation conclusion, reason codes)
   - Unified reason codes and user-facing tips
 
 ### Report-level changes
@@ -287,11 +273,26 @@ This project is licensed under the **MIT License**. See [LICENSE](LICENSE) for d
 
 ## Changelog
 
+### v2.4.1 (2026-03-17)
+
+- Release/Tag: `2.4.1`
+- **AKShare deep cleanup completed**
+  - Removed all AKShare code paths, dependency entries, and diagnostics scripts to avoid unstable-link impact on the main flow
+  - Replaced routing/report passthrough with generic symbol metadata (`metadata_passthrough`)
+- **AKShare usage difficulties (direct reason for removal)**
+  - Intermittent `REMOTE_DISCONNECTED` under the same network conditions
+  - Network probes passed while business-level requests remained unstable, reducing reproducibility and observability
+  - Could not meet this skill's requirement for consistent analysis and auditable outputs
+- **Data strategy refactor**
+  - Key-field priority switched to `web_search > eastmoney_query`
+  - East Money retained as a structured verification path with quota governance and quality scoring
+- Regression tests passed: **95/95**
+
 ### v2.4.0 (2026-03-17)
 
 - Release/Tag: `2.4.0`
-- **AKShare primary source integration completed**
-  - Core fields `symbol/name/price/trade_date` now use AKShare as the main decision source
+- **Dual-path source governance completed**
+  - Core fields now use `web_search > eastmoney_query`
   - Standardized field schema and unified error codes added to reduce cross-source drift
 - **Authenticity gate upgrades**
   - Enforced pre-analysis checks: code-name consistency, price validity, and trading-day timeliness
@@ -302,7 +303,6 @@ This project is licensed under the **MIT License**. See [LICENSE](LICENSE) for d
 - **Routing and report traceability enhancements**
   - Reports now include source function, fetched timestamp, validation conclusions, and reason codes
 - Tests expanded to **94 cases, all passed**
-- Special thanks again to the **AKShare** open-source community
 
 ### v2.3.1 (2026-03-14)
 

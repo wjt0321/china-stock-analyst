@@ -1,6 +1,5 @@
 import re
 import sys
-import os
 import tempfile
 import unittest
 import importlib
@@ -89,21 +88,21 @@ class TestStockSkill(unittest.TestCase):
         self._clear_team_router_runtime_state()
         with mock.patch.object(
             tr,
-            "_build_akshare_passthrough_meta",
+            "_build_metadata_passthrough_meta",
             return_value={
-                "provider": "akshare",
-                "source_function": "stock_utils.query_akshare_quote",
+                "provider": "eastmoney",
+                "source_function": "stock_utils.eastmoney_query",
                 "fetched_at": "2026-03-10 10:05:00",
                 "validation_passed": True,
-                "validation_conclusion": "AKShare 元信息校验通过",
+                "validation_conclusion": "标的元信息校验通过",
             },
         ):
             routed = tr.route_eastmoney_intent("请查600000最新公告与新闻舆情")
         self.assertEqual(routed.get("intent_category"), "news-search")
         self.assertTrue(routed.get("critical_gate", {}).get("passed"))
         self.assertTrue(routed.get("local_saved"))
-        passthrough = routed.get("akshare_passthrough", {})
-        self.assertEqual(passthrough.get("source_function"), "stock_utils.query_akshare_quote")
+        passthrough = routed.get("metadata_passthrough", {})
+        self.assertEqual(passthrough.get("source_function"), "stock_utils.eastmoney_query")
         self.assertEqual(passthrough.get("fetched_at"), "2026-03-10 10:05:00")
         self.assertIn("校验通过", passthrough.get("validation_conclusion", ""))
 
@@ -151,58 +150,23 @@ class TestStockSkill(unittest.TestCase):
         self.assertEqual(gate.get("fallback_action"), "use_local_analysis_only")
         self.assertIn("INTENT_NOT_MATCHED", gate.get("reason_codes", []))
 
-    def test_eastmoney_router_should_resolve_stock_name_via_akshare_and_keep_external_route(self):
+    def test_eastmoney_router_should_keep_name_request_without_forcing_fallback(self):
         self._clear_team_router_runtime_state()
-        with mock.patch.object(
-            tr,
-            "query_akshare_securities",
-            return_value={
-                "success": True,
-                "data": {"items": [{"symbol": "600000", "name": "浦发银行"}]},
-                "error": {},
-            },
-        ), mock.patch.object(
-            tr,
-            "query_akshare_quote",
-            return_value={
-                "success": True,
-                "data": {"quote": {"symbol": "600000", "name": "浦发银行", "last_price": 10.2}},
-                "error": {},
-                "meta": {"provider": "akshare"},
-            },
-        ):
-            routed = tr.route_eastmoney_intent("请查询浦发银行资金流向", stock_name="浦发银行")
+        routed = tr.route_eastmoney_intent("请查询浦发银行资金流向", stock_name="浦发银行")
         gate = routed.get("critical_gate", {})
         self.assertEqual(routed.get("intent_category"), "query")
         self.assertTrue(gate.get("passed"))
         self.assertFalse(routed.get("fallback_mode"))
-        self.assertEqual(routed.get("akshare_passthrough", {}).get("symbol"), "600000")
-        self.assertEqual(routed.get("akshare_passthrough", {}).get("symbol_resolved_via"), "name")
+        self.assertEqual(routed.get("metadata_passthrough", {}).get("symbol"), "")
+        self.assertEqual(routed.get("metadata_passthrough", {}).get("symbol_resolved_via"), "name")
 
-    def test_eastmoney_router_should_not_force_fallback_when_akshare_metadata_unavailable(self):
+    def test_eastmoney_router_should_not_force_fallback_when_symbol_missing(self):
         self._clear_team_router_runtime_state()
-        with mock.patch.object(
-            tr,
-            "query_akshare_securities",
-            return_value={
-                "success": False,
-                "error": {"code": "AKSHARE_API_ERROR", "message": "network"},
-                "data": {},
-            },
-        ), mock.patch.object(
-            tr,
-            "query_akshare_quote",
-            return_value={
-                "success": False,
-                "error": {"code": "AKSHARE_NOT_INSTALLED", "message": "missing"},
-                "data": {},
-            },
-        ):
-            routed = tr.route_eastmoney_intent("请查询浦发银行资金流向", stock_name="浦发银行")
+        routed = tr.route_eastmoney_intent("请查询浦发银行资金流向", stock_name="浦发银行")
         gate = routed.get("critical_gate", {})
         self.assertEqual(routed.get("intent_category"), "query")
         self.assertTrue(gate.get("passed"))
-        self.assertIn("AKSHARE_METADATA_UNAVAILABLE", gate.get("reason_codes", []))
+        self.assertIn("SYMBOL_METADATA_UNAVAILABLE", gate.get("reason_codes", []))
         self.assertFalse(routed.get("fallback_mode"))
 
     def test_eastmoney_router_cache_should_reset_when_previous_cache_expired(self):
@@ -1122,19 +1086,19 @@ class TestStockSkill(unittest.TestCase):
                             "user_tips": ["请降低返回条数（建议<=50）后重试。", "请补充股票代码或股票名称后再发起请求。"],
                         }
                     },
-                    "akshare_passthrough": {
-                        "source_function": "stock_utils.query_akshare_quote",
+                    "metadata_passthrough": {
+                        "source_function": "stock_utils.eastmoney_query",
                         "fetched_at": "2026-03-10 10:18:00",
-                        "validation_conclusion": "AKShare 元信息校验通过",
+                        "validation_conclusion": "标的元信息校验通过",
                     },
                 }
             ],
         }
         content = gr.format_obsidian_markdown_report(payload)
         self.assertIn("数据源元信息", content)
-        self.assertIn("来源函数：stock_utils.query_akshare_quote", content)
+        self.assertIn("来源函数：stock_utils.eastmoney_query", content)
         self.assertIn("抓取时间：2026-03-10 10:18:00", content)
-        self.assertIn("校验结论：AKShare 元信息校验通过", content)
+        self.assertIn("校验结论：标的元信息校验通过", content)
         self.assertIn("路由失败原因码：REQUEST_LIMIT_EXCEEDED; TARGET_REQUIRED", content)
         self.assertIn("路由用户提示", content)
 
@@ -1392,6 +1356,7 @@ class TestStockSkill(unittest.TestCase):
 
     def test_parse_news_search_should_mark_empty_result_and_tip(self):
         parsed = su.parse_eastmoney_news_search_response({"code": "0", "data": {"list": []}})
+        self.assertTrue(parsed.get("success"))
         self.assertTrue(parsed.get("empty_result"))
         self.assertEqual(parsed.get("total"), 0)
         self.assertEqual(parsed.get("empty_result_tip"), su.EASTMONEY_EMPTY_RESULT_TIP)
@@ -1399,9 +1364,65 @@ class TestStockSkill(unittest.TestCase):
 
     def test_parse_query_should_mark_empty_result_when_response_has_no_data(self):
         parsed = su.parse_eastmoney_query_response({"code": "0", "data": {"list": []}}, request_payload={"fields": ["price"]})
+        self.assertTrue(parsed.get("success"))
         self.assertTrue(parsed.get("empty_result"))
         self.assertEqual(parsed.get("key_fields"), {})
         self.assertIn("price", parsed.get("missing_fields", []))
+
+    def test_compile_stock_screen_conditions_should_parse_low_price_query(self):
+        conditions = su._compile_stock_screen_conditions("筛选10元以下低价股")
+        self.assertEqual(conditions.get("price_lte"), 10.0)
+
+    def test_eastmoney_stock_screen_should_accept_query_alias_and_inject_keyword(self):
+        fake_response = {
+            "code": "0",
+            "msg": "ok",
+            "data": {
+                "columns": [{"field": "stock_code", "label": "股票代码"}, {"field": "stock_name", "label": "股票名称"}],
+                "rows": [{"stock_code": "600000", "stock_name": "浦发银行"}],
+                "total": 1,
+            },
+        }
+        with mock.patch.object(su, "post_eastmoney", return_value=fake_response) as mocked_post:
+            parsed = su.eastmoney_stock_screen(query="筛选10元以下低价股", limit=10)
+        self.assertTrue(parsed.get("success"))
+        called_payload = mocked_post.call_args.kwargs.get("payload", {})
+        self.assertIn("keyword", called_payload)
+        self.assertEqual(called_payload.get("keyword"), "筛选10元以下低价股")
+        self.assertEqual(called_payload.get("conditions", {}).get("price_lte"), 10.0)
+
+    def test_eastmoney_stock_screen_should_accept_sort_rule_alias(self):
+        fake_response = {"code": "0", "msg": "ok", "data": {"columns": [], "rows": []}}
+        with mock.patch.object(su, "post_eastmoney", return_value=fake_response) as mocked_post:
+            su.eastmoney_stock_screen(query="筛选10元以下低价股", sort_rule="主力净流入降序", limit=10)
+        called_payload = mocked_post.call_args.kwargs.get("payload", {})
+        self.assertEqual(called_payload.get("sort_by"), "主力净流入降序")
+
+    def test_eastmoney_stock_screen_should_relax_conditions_when_empty(self):
+        responses = [
+            {"code": "0", "msg": "ok", "data": {"columns": [], "rows": [], "total": 0}},
+            {
+                "code": "0",
+                "msg": "ok",
+                "data": {"columns": [{"field": "stock_code", "label": "股票代码"}], "rows": [{"stock_code": "600000"}], "total": 1},
+            },
+        ]
+        with mock.patch.object(su, "post_eastmoney", side_effect=responses) as mocked_post:
+            parsed = su.eastmoney_stock_screen(
+                query="筛选10元以下低价股，优先选择近期有资金流入的股票",
+                limit=10,
+            )
+        self.assertTrue(parsed.get("success"))
+        self.assertEqual(parsed.get("total"), 1)
+        self.assertIn("price_only", parsed.get("relaxation_chain", []))
+        self.assertGreaterEqual(mocked_post.call_count, 2)
+
+    def test_parse_stock_screen_should_return_structured_error_when_meta_failed(self):
+        parsed = su.parse_eastmoney_stock_screen_response({"code": 100, "message": "参数校验失败，选股条件关键词不能为空"})
+        self.assertFalse(parsed.get("success"))
+        self.assertEqual(parsed.get("error", {}).get("code"), su.STANDARD_ERROR_CODE_INVALID_ARGUMENT)
+        details = parsed.get("error", {}).get("details", {})
+        self.assertIn("response_meta", details)
 
     def test_daily_quota_should_persist_count_and_block_when_exceeded(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1463,45 +1484,42 @@ class TestStockSkill(unittest.TestCase):
         self.assertIn("apikey", request_payload)
         self.assertNotEqual(request_payload["apikey"], "REAL_API_KEY_001")
 
-    def test_parse_query_should_prefer_akshare_for_key_fields_and_keep_missing_unfilled(self):
+    def test_parse_query_should_use_eastmoney_key_fields_and_track_quality(self):
         response = {"code": "0", "data": {"list": [{"price": 99.88, "change_percent": 9.9, "main_net_inflow": 12345}]}}
         parsed = su.parse_eastmoney_query_response(
             response,
             request_payload={"fields": ["price", "change_percent", "main_net_inflow"]},
-            akshare_result={
-                "success": True,
-                "data": {"quote": {"symbol": "600000", "last_price": 10.11, "change_percent": 1.23}},
-            },
         )
-        self.assertEqual(parsed.get("key_fields_provider"), "akshare")
+        self.assertEqual(parsed.get("key_fields_provider"), "eastmoney_query")
         self.assertEqual(parsed.get("key_fields_priority"), 1)
         self.assertTrue(parsed.get("model_completion_forbidden"))
-        self.assertEqual(parsed.get("key_fields", {}).get("price"), 10.11)
-        self.assertEqual(parsed.get("key_fields", {}).get("change_percent"), 1.23)
-        self.assertIn("main_net_inflow", parsed.get("missing_fields", []))
-        self.assertNotIn("main_net_inflow", parsed.get("key_fields", {}))
-        self.assertIn("main_net_inflow", parsed.get("fallback_key_fields", {}))
+        self.assertEqual(parsed.get("key_fields", {}).get("price"), 99.88)
+        self.assertEqual(parsed.get("key_fields", {}).get("change_percent"), 9.9)
+        self.assertEqual(parsed.get("key_fields", {}).get("main_net_inflow"), 12345)
+        self.assertEqual(parsed.get("missing_fields"), [])
         standardized = parsed.get("standardized_key_fields", {})
-        self.assertEqual(standardized.get("symbol"), "600000")
-        self.assertEqual(standardized.get("price"), 10.11)
+        self.assertEqual(standardized.get("price"), 99.88)
         self.assertEqual(standardized.get("trade_date"), datetime.now().strftime("%Y-%m-%d"))
+        quality_summary = parsed.get("data_quality_summary", {})
+        self.assertTrue(quality_summary.get("is_usable"))
+        self.assertEqual(quality_summary.get("provider"), "eastmoney_query")
 
-    def test_parse_query_should_fallback_to_eastmoney_when_akshare_unavailable(self):
+    def test_parse_query_should_keep_usable_when_only_optional_fields_missing(self):
         response = {"code": "0", "data": {"list": [{"price": 10.28, "change_percent": 1.8}]}}
         parsed = su.parse_eastmoney_query_response(
             response,
-            request_payload={"fields": ["price", "change_percent"]},
-            akshare_result={"success": False, "error": {"code": "AKSHARE_NOT_INSTALLED"}},
+            request_payload={"fields": ["price", "change_percent", "main_net_inflow"]},
         )
         self.assertEqual(parsed.get("key_fields_provider"), "eastmoney_query")
-        self.assertEqual(parsed.get("key_fields_priority"), 2)
+        self.assertEqual(parsed.get("key_fields_priority"), 1)
         self.assertEqual(parsed.get("key_fields", {}).get("price"), 10.28)
         self.assertEqual(parsed.get("key_fields", {}).get("change_percent"), 1.8)
-        self.assertEqual(parsed.get("missing_fields"), [])
-        self.assertEqual(parsed.get("fallback_key_fields"), {})
+        self.assertIn("main_net_inflow", parsed.get("missing_fields"))
         standardized = parsed.get("standardized_key_fields", {})
         self.assertEqual(standardized.get("price"), 10.28)
         self.assertEqual(standardized.get("trade_date"), datetime.now().strftime("%Y-%m-%d"))
+        quality_summary = parsed.get("data_quality_summary", {})
+        self.assertTrue(quality_summary.get("is_usable"))
 
     def test_normalize_stock_name_should_keep_st_prefix_by_default(self):
         self.assertEqual(su.normalize_stock_name("ST中珠"), "ST中珠")
@@ -1513,168 +1531,6 @@ class TestStockSkill(unittest.TestCase):
 
     def test_is_stock_name_alias_should_support_st_prefixed_alias_mapping(self):
         self.assertTrue(su.is_stock_name_alias("ST上海浦东发展银行", "浦发银行"))
-
-    def test_akshare_securities_should_return_invalid_argument_when_limit_not_positive(self):
-        result = su.query_akshare_securities(keyword="600000", limit=0)
-        self.assertFalse(result.get("success"))
-        self.assertEqual(result.get("error", {}).get("code"), su.STANDARD_ERROR_CODE_INVALID_ARGUMENT)
-
-    def test_akshare_securities_should_return_not_installed_when_dependency_missing(self):
-        with mock.patch.object(su, "_load_akshare_module", return_value=None):
-            result = su.query_akshare_securities(keyword="600000", limit=5)
-        self.assertFalse(result.get("success"))
-        self.assertEqual(result.get("error", {}).get("code"), su.STANDARD_ERROR_CODE_AKSHARE_NOT_INSTALLED)
-
-    def test_akshare_securities_should_normalize_standard_fields(self):
-        class _FakeFrame:
-            def to_dict(self, orient):
-                self._ = orient
-                return [
-                    {
-                        "代码": "600000",
-                        "名称": "浦发银行",
-                        "市场": "SH",
-                        "更新时间": "2026-03-10 10:06:00",
-                        "最新价": "10.21",
-                        "涨跌幅": "1.23",
-                        "换手率": "0.88",
-                        "量比": "1.56",
-                        "市盈率-动态": "6.10",
-                        "市净率": "0.52",
-                        "成交额": "123456789",
-                        "成交量": "987654",
-                    }
-                ]
-
-        class _FakeAk:
-            @staticmethod
-            def stock_zh_a_spot_em():
-                return _FakeFrame()
-
-        with mock.patch.object(su, "_load_akshare_module", return_value=_FakeAk()):
-            result = su.query_akshare_securities(keyword="600000", limit=5)
-
-        self.assertTrue(result.get("success"))
-        item = result.get("data", {}).get("items", [])[0]
-        self.assertEqual(item.get("symbol"), "600000")
-        self.assertEqual(item.get("name"), "浦发银行")
-        self.assertEqual(item.get("market"), "SH")
-        self.assertEqual(item.get("trade_date"), "2026-03-10")
-        self.assertEqual(item.get("last_price"), 10.21)
-        self.assertEqual(item.get("change_percent"), 1.23)
-
-    def test_akshare_quote_should_validate_symbol_format(self):
-        result = su.query_akshare_quote("ABC")
-        self.assertFalse(result.get("success"))
-        self.assertEqual(result.get("error", {}).get("code"), su.STANDARD_ERROR_CODE_INVALID_ARGUMENT)
-
-    def test_akshare_quote_should_return_exact_symbol_quote(self):
-        fake_result = {
-            "success": True,
-            "error": {},
-            "meta": {"provider": "akshare", "endpoint": "stock_zh_a_spot_em"},
-            "data": {
-                "items": [
-                    {"symbol": "600001", "name": "邯郸钢铁"},
-                    {"symbol": "600000", "name": "浦发银行", "last_price": 10.11},
-                ],
-                "total": 2,
-            },
-        }
-        with mock.patch.object(su, "_load_akshare_module", return_value=object()), mock.patch.object(
-            su, "query_akshare_securities", return_value=fake_result
-        ):
-            result = su.query_akshare_quote("600000")
-        self.assertTrue(result.get("success"))
-        self.assertEqual(result.get("data", {}).get("quote", {}).get("symbol"), "600000")
-        self.assertEqual(result.get("data", {}).get("quote", {}).get("name"), "浦发银行")
-        standardized = result.get("data", {}).get("standardized", {})
-        self.assertEqual(standardized.get("symbol"), "600000")
-        self.assertEqual(standardized.get("name"), "浦发银行")
-        self.assertEqual(standardized.get("price"), 10.11)
-
-    def test_akshare_securities_should_clear_proxy_env_when_proxy_disabled(self):
-        original_http_proxy = os.getenv("HTTP_PROXY")
-        original_https_proxy = os.getenv("HTTPS_PROXY")
-
-        class _FakeFrame:
-            def to_dict(self, orient):
-                self._ = orient
-                return [{"代码": "600000", "名称": "浦发银行", "最新价": "10.21"}]
-
-        class _FakeAk:
-            @staticmethod
-            def stock_zh_a_spot_em():
-                return _FakeFrame()
-
-        with mock.patch.dict(
-            "os.environ",
-            {"HTTP_PROXY": "http://127.0.0.1:10808", "HTTPS_PROXY": "http://127.0.0.1:10808", "AKSHARE_USE_PROXY": "0"},
-            clear=False,
-        ), mock.patch.object(su, "_load_akshare_module", return_value=_FakeAk()):
-            result = su.query_akshare_securities(keyword="600000", limit=1)
-        self.assertTrue(result.get("success"))
-        self.assertEqual(os.getenv("HTTP_PROXY"), original_http_proxy)
-        self.assertEqual(os.getenv("HTTPS_PROXY"), original_https_proxy)
-
-    def test_akshare_quote_should_prefer_bid_ask_endpoint_when_available(self):
-        class _FakeFrame:
-            def to_dict(self, orient):
-                self._ = orient
-                return [
-                    {"item": "名称", "value": "浦发银行"},
-                    {"item": "最新", "value": "10.35"},
-                    {"item": "涨跌幅", "value": "1.23"},
-                    {"item": "时间", "value": "2026-03-17 10:35:00"},
-                ]
-
-        class _FakeAk:
-            @staticmethod
-            def stock_bid_ask_em(symbol):
-                if symbol == "600000":
-                    return _FakeFrame()
-                return _FakeFrame()
-
-        with mock.patch.object(su, "_load_akshare_module", return_value=_FakeAk()):
-            result = su.query_akshare_quote("600000")
-        self.assertTrue(result.get("success"))
-        self.assertEqual(result.get("meta", {}).get("endpoint"), "stock_bid_ask_em")
-        self.assertEqual(result.get("data", {}).get("quote", {}).get("symbol"), "600000")
-        self.assertEqual(result.get("data", {}).get("standardized", {}).get("price"), 10.35)
-
-    def test_akshare_error_classifier_should_identify_remote_disconnected(self):
-        error_type = su._classify_akshare_exception(RuntimeError("Remote end closed connection without response"))
-        self.assertEqual(error_type, "REMOTE_DISCONNECTED")
-
-    def test_akshare_call_with_retries_should_retry_then_succeed(self):
-        state = {"count": 0}
-
-        def _flaky():
-            state["count"] += 1
-            if state["count"] < 3:
-                raise RuntimeError("temporary timeout")
-            return "ok"
-
-        with mock.patch.object(su, "AKSHARE_RETRY_BACKOFF_SECONDS", 0):
-            result = su._call_akshare_with_retries(_flaky, retries=3)
-        self.assertEqual(result, "ok")
-        self.assertEqual(state["count"], 3)
-
-    def test_akshare_securities_should_return_error_type_when_network_failed(self):
-        class _FakeAk:
-            @staticmethod
-            def stock_zh_a_spot_em():
-                raise RuntimeError("Remote end closed connection without response")
-
-        with mock.patch.object(su, "_load_akshare_module", return_value=_FakeAk()), mock.patch.object(
-            su, "AKSHARE_RETRY_BACKOFF_SECONDS", 0
-        ):
-            result = su.query_akshare_securities(keyword="600000", limit=1)
-        self.assertFalse(result.get("success"))
-        self.assertEqual(result.get("error", {}).get("code"), su.STANDARD_ERROR_CODE_AKSHARE_API_ERROR)
-        details = result.get("error", {}).get("details", {})
-        self.assertEqual(details.get("error_type"), "REMOTE_DISCONNECTED")
-
 
 if __name__ == "__main__":
     unittest.main()

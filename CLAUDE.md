@@ -201,7 +201,7 @@ run_expert_identifier_agent → supervisor_review → render_report
 
 1. **仅使用相对路径**：`stock-reports/`、`assets/`、`references/`、`scripts/`
 2. **Python 标准库**：`scripts/` 下脚本不依赖第三方包
-3. **Web Search 抽象**：不绑定特定 MCP 名称，优先使用环境可用的搜索工具
+3. **双路径策略**：优先 Web Search 获取候选快照，再用东财结构化接口复核关键字段
 4. **降级策略**：网络受限时输出结构化模板 + 数据缺失提示
 
 ## 关键文件说明

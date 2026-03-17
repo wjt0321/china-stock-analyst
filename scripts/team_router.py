@@ -6,10 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from stock_utils import (
-    is_stock_name_alias,
     normalize_stock_name,
-    query_akshare_quote,
-    query_akshare_securities,
     validate_stock_code,
 )
 
@@ -64,14 +61,14 @@ FAILURE_REASON_CODE_TIME_RANGE_EXCEEDED = "TIME_RANGE_EXCEEDED"
 FAILURE_REASON_CODE_TARGET_REQUIRED = "TARGET_REQUIRED"
 FAILURE_REASON_CODE_INTENT_NOT_MATCHED = "INTENT_NOT_MATCHED"
 FAILURE_REASON_CODE_DUPLICATE_REQUEST = "DUPLICATE_REQUEST"
-FAILURE_REASON_CODE_AKSHARE_METADATA_UNAVAILABLE = "AKSHARE_METADATA_UNAVAILABLE"
+FAILURE_REASON_CODE_SYMBOL_METADATA_UNAVAILABLE = "SYMBOL_METADATA_UNAVAILABLE"
 FAILURE_REASON_TIPS = {
     FAILURE_REASON_CODE_REQUEST_LIMIT_EXCEEDED: "请降低返回条数（建议<=50）后重试。",
     FAILURE_REASON_CODE_TIME_RANGE_EXCEEDED: "请缩小时间范围（建议<=180天）后重试。",
     FAILURE_REASON_CODE_TARGET_REQUIRED: "请补充股票代码或股票名称后再发起请求。",
     FAILURE_REASON_CODE_INTENT_NOT_MATCHED: "未识别到东财意图，已降级为本地分析流程。",
     FAILURE_REASON_CODE_DUPLICATE_REQUEST: "请求过于频繁，请稍后重试或补充差异化筛选条件。",
-    FAILURE_REASON_CODE_AKSHARE_METADATA_UNAVAILABLE: "AKShare 元信息暂不可用，已自动降级为东财/本地流程。",
+    FAILURE_REASON_CODE_SYMBOL_METADATA_UNAVAILABLE: "缺少可用股票代码，已降级为东财/本地流程。",
 }
 
 PRECONFIGURED_EXPERT_AGENTS = {
@@ -284,18 +281,18 @@ def route_eastmoney_intent(user_request: str, stock_code: str = "", stock_name: 
     gate = _build_critical_gate(route, normalized, stock_code=stock_code, stock_name=stock_name)
     cache_result = _apply_intent_cache(route, gate, normalized)
     resolved_identity = _resolve_stock_identity_for_router(stock_code, stock_name, request)
-    akshare_passthrough = _build_akshare_passthrough_meta(
+    metadata_passthrough = _build_metadata_passthrough_meta(
         resolved_identity.get("stock_code", ""),
         resolved_identity.get("stock_name", ""),
     )
-    akshare_passthrough["symbol_resolved_via"] = resolved_identity.get("resolution_source", "")
-    akshare_passthrough["resolution_trace"] = resolved_identity.get("resolution_trace", [])
-    if not akshare_passthrough.get("validation_passed", True):
-        if akshare_passthrough.get("failure_code"):
+    metadata_passthrough["symbol_resolved_via"] = resolved_identity.get("resolution_source", "")
+    metadata_passthrough["resolution_trace"] = resolved_identity.get("resolution_trace", [])
+    if not metadata_passthrough.get("validation_passed", True):
+        if metadata_passthrough.get("failure_code"):
             _append_guardrail_failure(
                 gate,
-                code=akshare_passthrough.get("failure_code"),
-                message=akshare_passthrough.get("validation_conclusion", "AKShare 元信息校验未通过"),
+                code=metadata_passthrough.get("failure_code"),
+                message=metadata_passthrough.get("validation_conclusion", "标的元信息校验未通过"),
             )
     fallback_mode = (
         gate.get("blocked_by_guardrail")
@@ -309,9 +306,10 @@ def route_eastmoney_intent(user_request: str, stock_code: str = "", stock_name: 
         "matched_keywords": route.get("matched_keywords", []),
         "intent_confidence": route.get("intent_confidence", 0.0),
         "critical_gate": gate,
-        "akshare_passthrough": akshare_passthrough,
+        "metadata_passthrough": metadata_passthrough,
         "cache": cache_result,
         "fallback_mode": bool(fallback_mode),
+        "websearch_fallback_forbidden": False,
         "local_saved": False,
         "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -535,42 +533,7 @@ def _resolve_stock_identity_for_router(stock_code: str, stock_name: str, request
             "resolution_source": "",
             "resolution_trace": trace,
         }
-    trace.append("resolve_by_akshare_securities")
-    result = query_akshare_securities(keyword=normalized_name, limit=20)
-    if not result.get("success"):
-        trace.append(f"akshare_securities_failed:{((result.get('error') or {}).get('code', 'unknown'))}")
-        return {
-            "stock_code": "",
-            "stock_name": normalized_name,
-            "resolution_source": "name",
-            "resolution_trace": trace,
-        }
-    items = ((result.get("data") or {}).get("items") or [])
-    for item in items:
-        candidate_code = str(item.get("symbol") or "").strip()
-        candidate_name = str(item.get("name") or "").strip()
-        if not validate_stock_code(candidate_code):
-            continue
-        if is_stock_name_alias(candidate_name, normalized_name):
-            trace.append("resolved_by_alias_match")
-            return {
-                "stock_code": candidate_code,
-                "stock_name": normalize_stock_name(candidate_name) or normalized_name,
-                "resolution_source": "name",
-                "resolution_trace": trace,
-            }
-    first_item = items[0] if items else {}
-    first_code = str(first_item.get("symbol") or "").strip()
-    first_name = str(first_item.get("name") or "").strip()
-    if validate_stock_code(first_code):
-        trace.append("resolved_by_first_candidate")
-        return {
-            "stock_code": first_code,
-            "stock_name": normalize_stock_name(first_name) or normalized_name,
-            "resolution_source": "name",
-            "resolution_trace": trace,
-        }
-    trace.append("name_resolve_failed")
+    trace.append("name_only_without_symbol")
     return {
         "stock_code": "",
         "stock_name": normalized_name,
@@ -579,43 +542,32 @@ def _resolve_stock_identity_for_router(stock_code: str, stock_name: str, request
     }
 
 
-def _build_akshare_passthrough_meta(stock_code: str, stock_name: str = "") -> dict:
+def _build_metadata_passthrough_meta(stock_code: str, stock_name: str = "") -> dict:
     fetched_at = _now_text()
     base = {
-        "provider": "akshare",
-        "source_function": "stock_utils.query_akshare_quote",
+        "provider": "eastmoney",
+        "source_function": "stock_utils.eastmoney_query",
         "fetched_at": fetched_at,
         "symbol": stock_code or "",
         "stock_name": (stock_name or "").strip(),
         "validation_passed": True,
-        "validation_conclusion": "AKShare 元信息校验通过",
+        "validation_conclusion": "东财标的元信息校验通过",
         "failure_code": "",
         "failure_message": "",
         "meta": {},
     }
     if not stock_code:
         base["validation_passed"] = False
-        base["validation_conclusion"] = "缺少合法股票代码，无法抓取 AKShare 元信息"
-        base["failure_code"] = FAILURE_REASON_CODE_AKSHARE_METADATA_UNAVAILABLE
+        base["validation_conclusion"] = "缺少合法股票代码，无法执行结构化关键字段校验"
+        base["failure_code"] = FAILURE_REASON_CODE_SYMBOL_METADATA_UNAVAILABLE
         base["failure_message"] = "missing_stock_code"
         return base
-    result = query_akshare_quote(stock_code)
-    base["meta"] = result.get("meta", {})
-    if result.get("success"):
-        quote = ((result.get("data") or {}).get("quote") or {})
-        base["quote_snapshot"] = {
-            "symbol": quote.get("symbol", stock_code),
-            "name": quote.get("name", ""),
-            "last_price": quote.get("last_price", ""),
-            "change_percent": quote.get("change_percent", ""),
-        }
-        return base
-    error = result.get("error", {})
-    code = str(error.get("code") or FAILURE_REASON_CODE_AKSHARE_METADATA_UNAVAILABLE)
-    base["validation_passed"] = False
-    base["validation_conclusion"] = "AKShare 元信息抓取失败，已降级"
-    base["failure_code"] = code
-    base["failure_message"] = str(error.get("message", "unknown_error"))
+    base["quote_snapshot"] = {
+        "symbol": stock_code,
+        "name": (stock_name or "").strip(),
+        "last_price": "",
+        "change_percent": "",
+    }
     return base
 
 
