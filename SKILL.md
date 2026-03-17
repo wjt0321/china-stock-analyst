@@ -474,6 +474,15 @@ description: A股短线营收分析助手，聚焦“短线交易信号 + 营收
 
 - 运行 `python -m unittest tests/test_stock_skill.py`
 - 用单票与双票 payload 各生成一次报告，确认模板切换和反转预警可用
+- 运行 `python scripts/run_report_quality_checks.py` 对 `stock-reports/*.md` 执行价格一致性与时间锚点质量检查
+- ` .githooks/pre-push` 仅用于约束推送目标仓库与分支，不承载质量门禁逻辑
+
+### 采集阶段门禁（专家执行前）
+
+- 门禁位置：数据采集完成后、专家执行前
+- 判定原则：`web_search` 审计与 `eastmoney` 结构化校验双轨并行，且都要通过
+- 失败策略：降级继续，不阻断专家执行，但将 `confidence_level` 下调为 `低`
+- 可观测字段：`collection_quality_gate.passed/web_passed/eastmoney_passed/reasons/next_action`
 
 ### 测试覆盖范围（`tests/test_stock_skill.py`）
 

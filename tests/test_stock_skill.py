@@ -626,6 +626,41 @@ class TestStockSkill(unittest.TestCase):
         reasons = " ".join(gate.get("downgrade_reasons", []))
         self.assertNotIn("多源时间戳冲突", reasons)
 
+    def test_collection_quality_gate_should_downgrade_when_web_passes_but_eastmoney_fails(self):
+        search_data = self._build_multi_source_core_data(
+            ["2026-03-10 09:30", "2026-03-10 09:35", "2026-03-10 09:45"]
+        )
+        report = parse_search_results_to_report(search_data, "600000", request_date="2026-03-10")
+        gate = report.get("collection_quality_gate", {})
+        self.assertFalse(gate.get("passed"))
+        self.assertTrue(gate.get("web_passed"))
+        self.assertFalse(gate.get("eastmoney_passed"))
+        self.assertEqual(report.get("confidence_level"), "低")
+        self.assertEqual(report.get("audit_gate", {}).get("next_action"), "downgrade_continue")
+        self.assertEqual(report.get("shortline_signals", {}).get("collection_gate_downgraded"), "true")
+
+    def test_collection_quality_gate_should_downgrade_when_web_fails_but_eastmoney_passes(self):
+        report = {
+            "audit_gate": {"passed": False, "downgrade_reasons": ["price: 日期回退"]},
+            "data_quality_summary": {"is_usable": True},
+            "field_conflict_summary": {"has_conflict": False},
+        }
+        gate = gr._run_collection_quality_gate(report)
+        self.assertFalse(gate.get("passed"))
+        self.assertFalse(gate.get("web_passed"))
+        self.assertTrue(gate.get("eastmoney_passed"))
+
+    def test_collection_quality_gate_should_pass_when_both_tracks_pass(self):
+        report = {
+            "audit_gate": {"passed": True, "downgrade_reasons": []},
+            "data_quality_summary": {"is_usable": True},
+            "field_conflict_summary": {"has_conflict": False},
+        }
+        gate = gr._run_collection_quality_gate(report)
+        self.assertTrue(gate.get("passed"))
+        self.assertTrue(gate.get("web_passed"))
+        self.assertTrue(gate.get("eastmoney_passed"))
+
     def test_data_audit_should_pass_when_source_categories_reach_two(self):
         search_data = self._build_multi_source_core_data(
             ["2026-03-10 09:30", "2026-03-10 09:35", "2026-03-10 09:45"]
@@ -699,6 +734,30 @@ class TestStockSkill(unittest.TestCase):
         self.assertIn("数据真实性审计", content)
         self.assertIn("审计状态：未通过", content)
         self.assertIn("数据真实性审计未通过，需先重采再评估", content)
+
+    def test_markdown_should_render_collection_quality_gate_lines(self):
+        payload = {
+            "date": "2026-03-10",
+            "stocks": [
+                {
+                    "stock_code": "601868",
+                    "stock_name": "中国能建",
+                    "label": "观察",
+                    "scores": {"momentum": 85, "revenue": 75, "risk": 70},
+                    "collection_quality_gate": {
+                        "passed": False,
+                        "web_passed": True,
+                        "eastmoney_passed": False,
+                        "next_action": "downgrade_continue",
+                        "reasons": ["eastmoney:缺少东财结构化质量信息"],
+                    },
+                }
+            ],
+        }
+        content = gr.format_obsidian_markdown_report(payload)
+        self.assertIn("采集阶段门禁", content)
+        self.assertIn("门禁状态：降级继续", content)
+        self.assertIn("东财结构化校验：未通过", content)
 
     def test_markdown_should_append_machine_readable_verdict_blocks(self):
         payload = {
@@ -1303,6 +1362,53 @@ class TestStockSkill(unittest.TestCase):
         self.assertIn("消息面猎手结论", content)
         self.assertIn("主管裁决与冲突仲裁", content)
         self.assertIn("仲裁结论标签上限：回避", content)
+
+    def test_markdown_should_prefix_expert_titles_when_collection_gate_failed(self):
+        payload = {
+            "date": "2026-03-10",
+            "stocks": [
+                {
+                    "stock_code": "601868",
+                    "stock_name": "中国能建",
+                    "label": "观察",
+                    "scores": {"momentum": 85, "revenue": 75, "risk": 70},
+                    "collection_quality_gate": {
+                        "passed": False,
+                        "web_passed": True,
+                        "eastmoney_passed": False,
+                        "next_action": "downgrade_continue",
+                        "reasons": ["eastmoney:缺少东财结构化质量信息"],
+                    },
+                    "industry_research_output": {
+                        "outlook": "景气上行",
+                        "inflection": "上行拐点初现",
+                        "competition_landscape": "头部集中度提升",
+                        "decision_hint": "可做",
+                    },
+                    "event_hunter_output": {
+                        "impact_direction": "负向",
+                        "impact_strength": "强",
+                        "time_window": "1-3个交易日",
+                        "regulatory_signal": "高",
+                        "decision_hint": "回避",
+                    },
+                    "expert_outputs": {
+                        "fundamental_expert": {
+                            "summary": "估值修复仍需验证",
+                            "positive_evidences": ["营收同比增长12.5%"],
+                            "negative_evidences": ["短期利润弹性仍有限"],
+                            "risk_tip": "若需求回落则估值承压",
+                            "confidence": "中",
+                            "decision_hint": "观察",
+                        }
+                    },
+                }
+            ],
+        }
+        content = gr.format_obsidian_markdown_report(payload)
+        self.assertIn("[低置信度] 行业研究家结论", content)
+        self.assertIn("[低置信度] 消息面猎手结论", content)
+        self.assertIn("[低置信度] 基本面专家结论", content)
 
     def test_markdown_should_render_fundamental_expert_v2_output(self):
         payload = {

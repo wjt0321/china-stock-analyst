@@ -93,6 +93,14 @@ def parse_search_results_to_report(
             "downgrade_reasons": [],
             "next_action": "continue",
         },
+        "collection_quality_gate": {
+            "passed": True,
+            "web_passed": True,
+            "eastmoney_passed": True,
+            "reasons": [],
+            "next_action": "continue",
+        },
+        "confidence_level": "中",
         "expert_outputs": {},
         "expert_identity_gate": {
             "passed": True,
@@ -161,6 +169,8 @@ def parse_search_results_to_report(
         })
     report["audit_gate"] = _run_data_authenticity_audit(report, request_date=request_date)
     _apply_audit_downgrade(report)
+    report["collection_quality_gate"] = _run_collection_quality_gate(report)
+    _apply_collection_gate_downgrade(report)
     report["sentiment_governance"] = _govern_news_sentiment(report.get("news", []))
     industry_output, event_output = _run_expert_round(report)
     report["expert_outputs"]["industry_researcher"] = industry_output
@@ -710,6 +720,75 @@ def _apply_audit_downgrade(report: dict):
         return
     report.setdefault("shortline_signals", {})["audit_downgraded"] = "true"
     report["shortline_signals"]["audit_next_action"] = gate.get("next_action", "resample")
+
+
+def _run_collection_quality_gate(report: dict) -> dict:
+    audit_gate = report.get("audit_gate", {})
+    web_passed = bool(audit_gate.get("passed", False))
+    eastmoney_quality = _resolve_eastmoney_quality(report)
+    eastmoney_passed = bool(eastmoney_quality.get("passed", False))
+    reasons = []
+    if not web_passed:
+        audit_reasons = audit_gate.get("downgrade_reasons", [])
+        reason_text = "；".join(audit_reasons) if audit_reasons else "Web Search 审计未通过"
+        reasons.append(f"web_search:{reason_text}")
+    if not eastmoney_passed:
+        eastmoney_reasons = eastmoney_quality.get("reasons", [])
+        reason_text = "；".join(eastmoney_reasons) if eastmoney_reasons else "东财结构化校验未通过"
+        reasons.append(f"eastmoney:{reason_text}")
+    passed = web_passed and eastmoney_passed
+    return {
+        "passed": passed,
+        "web_passed": web_passed,
+        "eastmoney_passed": eastmoney_passed,
+        "reasons": reasons,
+        "next_action": "continue" if passed else "downgrade_continue",
+    }
+
+
+def _resolve_eastmoney_quality(report: dict) -> dict:
+    quality = report.get("data_quality_summary", {})
+    conflict = report.get("field_conflict_summary", {})
+    if isinstance(quality, dict) and quality:
+        has_conflict = bool(conflict.get("has_conflict", False))
+        passed = bool(quality.get("is_usable", False)) and not has_conflict
+        reasons = []
+        if not quality.get("is_usable", False):
+            missing_required = quality.get("missing_required_fields", [])
+            missing_text = ",".join([str(item) for item in missing_required]) or "关键字段缺失"
+            reasons.append(f"is_usable=false({missing_text})")
+        if has_conflict:
+            reasons.append("field_conflict_summary.has_conflict=true")
+        return {"passed": passed, "reasons": reasons}
+    router = report.get("eastmoney_router", {})
+    critical_gate = router.get("critical_gate", {})
+    reason_codes = critical_gate.get("reason_codes", [])
+    if reason_codes:
+        return {
+            "passed": False,
+            "reasons": [f"critical_gate:{';'.join([str(code) for code in reason_codes])}"],
+        }
+    return {"passed": False, "reasons": ["缺少东财结构化质量信息"]}
+
+
+def _apply_collection_gate_downgrade(report: dict):
+    gate = report.get("collection_quality_gate", {})
+    if gate.get("passed", True):
+        return
+    report["confidence_level"] = "低"
+    report.setdefault("shortline_signals", {})["collection_gate_downgraded"] = "true"
+    report["shortline_signals"]["collection_gate_next_action"] = gate.get("next_action", "downgrade_continue")
+    report["audit_gate"]["next_action"] = "downgrade_continue"
+    existing = report.get("repair_suggestions", [])
+    suggestions = list(existing) if isinstance(existing, list) else []
+    extras = [
+        "建议重采样并刷新东财结构化快照",
+        "建议补齐价格时间锚点后再做专家裁决",
+    ]
+    for tip in extras:
+        if tip not in suggestions:
+            suggestions.append(tip)
+    report["repair_suggestions"] = suggestions
 
 
 def _pick_field_records(field_sources: dict, simple_field: str) -> list:
@@ -1946,6 +2025,7 @@ def _build_stock_pool_markdown(stocks: list, date_text: str) -> str:
 
 def _extend_stock_detail_sections(lines: list, stock: dict, sentiment_governance: dict) -> None:
     lines.extend(_build_data_audit_lines(stock))
+    lines.extend(_build_collection_quality_gate_lines(stock))
     lines.extend(_build_data_quality_verdict_lines(stock))
     lines.extend(_build_data_source_meta_lines(stock))
     lines.extend(_build_authenticity_verification_lines(stock))
@@ -2149,6 +2229,9 @@ def _build_score_formula(scores: dict) -> str:
 
 
 def _derive_confidence(stock: dict) -> str:
+    explicit = str(stock.get("confidence_level", "")).strip()
+    if explicit in ("高", "中", "低"):
+        return explicit
     audit_gate = stock.get("audit_gate", {})
     if audit_gate and not audit_gate.get("passed", True):
         return "低"
@@ -2276,6 +2359,25 @@ def _build_data_quality_verdict_lines(stock: dict) -> list:
     return lines
 
 
+def _build_collection_quality_gate_lines(stock: dict) -> list:
+    gate = stock.get("collection_quality_gate", {})
+    if not gate:
+        return []
+    lines = [
+        "",
+        "## 采集阶段门禁",
+        "",
+        f"- 门禁状态：{'通过' if gate.get('passed') else '降级继续'}",
+        f"- Web Search 审计：{'通过' if gate.get('web_passed') else '未通过'}",
+        f"- 东财结构化校验：{'通过' if gate.get('eastmoney_passed') else '未通过'}",
+        f"- 后续动作：{gate.get('next_action', 'continue')}",
+    ]
+    reasons = gate.get("reasons", [])
+    if reasons:
+        lines.append(f"- 失败原因：{'; '.join(reasons)}")
+    return lines
+
+
 def _build_debate_risk_lines(stock: dict) -> list:
     debate_state = stock.get("debate_state", {})
     risk_judge = stock.get("risk_judge", {})
@@ -2395,13 +2497,21 @@ def _build_revenue_snapshot_lines(stock: dict) -> list:
     ]
 
 
+def _expert_title_prefix(stock: dict) -> str:
+    gate = stock.get("collection_quality_gate", {})
+    if gate and not gate.get("passed", True):
+        return "[低置信度] "
+    return ""
+
+
 def _build_industry_research_lines(stock: dict) -> list:
     output = _resolve_industry_output(stock)
     if not output:
         return []
+    prefix = _expert_title_prefix(stock)
     return [
         "",
-        "## 行业研究家结论",
+        f"## {prefix}行业研究家结论",
         "",
         f"- 景气结论：{output.get('outlook', 'N/A')}",
         f"- 景气拐点：{output.get('inflection', 'N/A')}",
@@ -2417,9 +2527,10 @@ def _build_fundamental_expert_lines(stock: dict) -> list:
     normalized = _normalize_fundamental_output(output)
     positive = normalized.get("positive_evidences", [])
     negative = normalized.get("negative_evidences", [])
+    prefix = _expert_title_prefix(stock)
     lines = [
         "",
-        "## 基本面专家结论",
+        f"## {prefix}基本面专家结论",
         "",
         f"- 观点摘要：{normalized.get('summary', 'N/A')}",
         f"- 风险提示：{normalized.get('risk_tip', 'N/A')}",
@@ -2437,9 +2548,10 @@ def _build_event_hunter_lines(stock: dict) -> list:
     output = _resolve_event_output(stock)
     if not output:
         return []
+    prefix = _expert_title_prefix(stock)
     return [
         "",
-        "## 消息面猎手结论",
+        f"## {prefix}消息面猎手结论",
         "",
         f"- 事件方向：{output.get('impact_direction', '中性')}",
         f"- 冲击强度：{output.get('impact_strength', '弱')}",
