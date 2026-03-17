@@ -130,41 +130,45 @@ def should_use_agent_team(user_request: str) -> dict:
     }
 
 
-def build_skill_chain_plan(use_team: bool) -> dict:
+def build_skill_chain_plan(use_team: bool, execution_profile: str = "full_parallel") -> dict:
+    normalized_profile = str(execution_profile or "full_parallel").strip().lower()
+    lite_profile = normalized_profile == "lite_parallel"
+    lite_steps = [
+        "run_data_auditor",
+        "collect_data",
+        "run_fundamental_expert",
+        "run_technical_expert",
+        "run_quant_flow_expert",
+        "run_risk_expert",
+        "run_expert_identifier_agent",
+        "supervisor_review",
+        "render_report",
+    ]
+    full_steps = [
+        "run_data_auditor",
+        "collect_data",
+        "run_fundamental_expert",
+        "run_technical_expert",
+        "run_quant_flow_expert",
+        "run_risk_expert",
+        "run_macro_expert",
+        "run_industry_researcher_expert",
+        "run_event_hunter_expert",
+        "run_expert_identifier_agent",
+        "supervisor_review",
+        "render_report",
+    ]
     if not use_team:
         return {
             "mode": "agent_team",
             "execution_profile": "lite_parallel",
-            "steps": [
-                "run_data_auditor",
-                "collect_data",
-                "run_fundamental_expert",
-                "run_technical_expert",
-                "run_quant_flow_expert",
-                "run_risk_expert",
-                "run_expert_identifier_agent",
-                "supervisor_review",
-                "render_report",
-            ],
+            "steps": lite_steps,
             "team_rules": build_shortline_supervisor_rules(),
         }
     return {
         "mode": "agent_team",
-        "execution_profile": "full_parallel",
-        "steps": [
-            "run_data_auditor",
-            "collect_data",
-            "run_fundamental_expert",
-            "run_technical_expert",
-            "run_quant_flow_expert",
-            "run_risk_expert",
-            "run_macro_expert",
-            "run_industry_researcher_expert",
-            "run_event_hunter_expert",
-            "run_expert_identifier_agent",
-            "supervisor_review",
-            "render_report",
-        ],
+        "execution_profile": "lite_parallel" if lite_profile else "full_parallel",
+        "steps": lite_steps if lite_profile else full_steps,
         "team_rules": build_shortline_supervisor_rules(),
     }
 

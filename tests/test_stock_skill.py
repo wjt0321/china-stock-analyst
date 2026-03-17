@@ -63,10 +63,10 @@ class TestStockSkill(unittest.TestCase):
     def test_route_plan_should_keep_team_fixed_steps_even_in_lite_parallel(self):
         route = gr.plan_analysis_route("分析 600519")
         self.assertEqual(route["execution_profile"], "lite_parallel")
-        self.assertIn("run_macro_expert", route["steps"])
-        self.assertIn("run_industry_researcher_expert", route["steps"])
-        self.assertIn("run_event_hunter_expert", route["steps"])
         self.assertIn("run_expert_identifier_agent", route["steps"])
+        self.assertNotIn("run_macro_expert", route["steps"])
+        self.assertNotIn("run_industry_researcher_expert", route["steps"])
+        self.assertNotIn("run_event_hunter_expert", route["steps"])
 
     def test_should_enable_agent_team_for_multi_stock_request(self):
         decision = should_use_agent_team("请分析中国能建和首开股份，给我短线建议")
@@ -220,6 +220,14 @@ class TestStockSkill(unittest.TestCase):
         self.assertIn("expert_output_schema", plan["team_rules"])
         self.assertIn("conflict_arbitration_rules", plan["team_rules"])
         self.assertIn("run_expert_identifier_agent", plan["team_rules"].get("expert_output_schema", {}))
+
+    def test_should_build_lite_skill_chain_when_profile_is_lite_parallel(self):
+        plan = build_skill_chain_plan(use_team=True, execution_profile="lite_parallel")
+        self.assertEqual(plan["execution_profile"], "lite_parallel")
+        self.assertIn("run_expert_identifier_agent", plan["steps"])
+        self.assertNotIn("run_macro_expert", plan["steps"])
+        self.assertNotIn("run_industry_researcher_expert", plan["steps"])
+        self.assertNotIn("run_event_hunter_expert", plan["steps"])
 
     def test_team_rules_should_include_continuity_guard_for_parallel_non_interrupt(self):
         plan = build_skill_chain_plan(use_team=True)
@@ -581,6 +589,33 @@ class TestStockSkill(unittest.TestCase):
         self.assertIn("多源时间戳冲突", reasons)
         self.assertEqual(report.get("data_quality_verdict", {}).get("verdict"), "low")
         self.assertEqual(report.get("risk_judge", {}).get("verdict"), "fail")
+
+    def test_data_audit_should_mark_conflict_when_multi_source_price_diverges(self):
+        search_data = [
+            {
+                "title": "交易所行情",
+                "snippet": "最新价10.00元，涨跌幅+1.2%，成交额2.1亿元，主力资金净流入1.1亿元，更新时间2026-03-10 10:00",
+                "link": "https://www.sse.com.cn/marketdata",
+                "timestamp": "2026-03-10 10:00",
+            },
+            {
+                "title": "资讯行情A",
+                "snippet": "最新价10.80元，涨跌幅+1.2%，成交额2.1亿元，主力资金净流入1.1亿元，更新时间2026-03-10 10:02",
+                "link": "https://www.yicai.com/news/stock",
+                "timestamp": "2026-03-10 10:02",
+            },
+            {
+                "title": "资讯行情B",
+                "snippet": "最新价10.70元，涨跌幅+1.2%，成交额2.1亿元，主力资金净流入1.1亿元，更新时间2026-03-10 10:04",
+                "link": "https://www.cninfo.com.cn/new/disclosure",
+                "timestamp": "2026-03-10 10:04",
+            },
+        ]
+        report = parse_search_results_to_report(search_data, "600000", request_date="2026-03-10")
+        gate = report.get("audit_gate", {})
+        self.assertFalse(gate.get("passed"))
+        reasons = " ".join(gate.get("downgrade_reasons", []))
+        self.assertIn("多源数值冲突", reasons)
 
     def test_data_audit_should_not_mark_conflict_within_threshold(self):
         search_data = self._build_multi_source_core_data(

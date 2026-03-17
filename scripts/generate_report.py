@@ -658,12 +658,14 @@ def _run_data_authenticity_audit(report: dict, request_date: str = "") -> dict:
         timestamp_missing = bool(matched_records) and len(timestamps) < len(matched_records)
         date_rollback = any(ts < request_dt for ts in timestamps)
         timestamp_conflict = _has_timestamp_conflict(timestamps, threshold_minutes)
+        value_conflict = _has_field_value_conflict(field, matched_records)
         category_insufficient = len(categories) < required_categories
         trusted = (
             bool(matched_records)
             and not timestamp_missing
             and not date_rollback
             and not timestamp_conflict
+            and not value_conflict
             and not category_insufficient
         )
         consistency = "一致" if trusted else "不一致"
@@ -676,6 +678,8 @@ def _run_data_authenticity_audit(report: dict, request_date: str = "") -> dict:
             reasons.append("日期回退")
         if timestamp_conflict:
             reasons.append("多源时间戳冲突")
+        if value_conflict:
+            reasons.append("多源数值冲突")
         if category_insufficient:
             reasons.append(f"来源类别不足({len(categories)}/{required_categories})")
         if reasons:
@@ -723,6 +727,35 @@ def _has_timestamp_conflict(timestamps: list, threshold_minutes: int) -> bool:
     min_ts = min(timestamps)
     max_ts = max(timestamps)
     return (max_ts - min_ts) > timedelta(minutes=threshold_minutes)
+
+
+def _has_field_value_conflict(field: str, records: list) -> bool:
+    if str(field or "").strip() not in {"price", "change"}:
+        return False
+    values = []
+    for item in records:
+        numeric = _extract_numeric_value(item.get("value", ""))
+        if numeric is None:
+            continue
+        values.append(numeric)
+    if len(values) <= 1:
+        return False
+    min_value = min(values)
+    max_value = max(values)
+    if field == "price":
+        baseline = max(abs((min_value + max_value) / 2), 1.0)
+        return (max_value - min_value) / baseline > 0.05
+    return abs(max_value - min_value) > 1.2
+
+
+def _extract_numeric_value(text: str):
+    matched = re.search(r"-?\d+(?:\.\d+)?", str(text or ""))
+    if not matched:
+        return None
+    try:
+        return float(matched.group(0))
+    except Exception:
+        return None
 
 
 def _parse_day(day_text: str):
@@ -1781,13 +1814,13 @@ def format_obsidian_markdown_report(payload: dict) -> str:
 
 def plan_analysis_route(user_request: str) -> dict:
     decision = should_use_agent_team(user_request)
-    # lite/full 统一走 Team 编排，仅执行强度由 execution_profile 控制
-    plan = build_skill_chain_plan(use_team=True)
+    execution_profile = decision.get("execution_profile", "lite_parallel")
+    plan = build_skill_chain_plan(use_team=True, execution_profile=execution_profile)
     return {
         "mode": plan.get("mode", "agent_team"),
         "steps": plan.get("steps", []),
         "reasons": decision.get("reasons", []),
-        "execution_profile": decision.get("execution_profile", plan.get("execution_profile", "lite_parallel")),
+        "execution_profile": plan.get("execution_profile", execution_profile),
         "team_rules": plan.get("team_rules", {}),
     }
 
@@ -1854,25 +1887,7 @@ def _build_single_stock_markdown(stock: dict, date_text: str) -> str:
         f"- 结论标签：{label}",
         f"- 置信度：{_derive_confidence(stock)}",
     ]
-    lines.extend(_build_data_audit_lines(stock))
-    lines.extend(_build_data_quality_verdict_lines(stock))
-    lines.extend(_build_data_source_meta_lines(stock))
-    lines.extend(_build_authenticity_verification_lines(stock))
-    lines.extend(_build_debate_risk_lines(stock))
-    lines.extend(_build_expert_identity_lines(stock))
-    lines.extend(_build_process_block_lines(stock))
-    lines.extend(_build_revenue_snapshot_lines(stock))
-    lines.extend(_build_shortline_signal_lines(stock))
-    lines.extend(_build_fundamental_expert_lines(stock))
-    lines.extend(_build_industry_research_lines(stock))
-    lines.extend(_build_event_hunter_lines(stock))
-    lines.extend(_build_supervisor_arbitration_lines(stock))
-    lines.extend(_build_sentiment_governance_lines(sentiment_governance))
-    warning = _build_reversal_warning(stock)
-    if warning:
-        lines.extend(["", warning])
-    lines.extend(_build_evidence_lines(stock))
-    lines.extend(_build_machine_readable_blocks(stock))
+    _extend_stock_detail_sections(lines, stock, sentiment_governance)
     return "\n".join(lines)
 
 
@@ -1923,28 +1938,32 @@ def _build_stock_pool_markdown(stocks: list, date_text: str) -> str:
             f"- 加权总分计算：{_build_score_formula(stock.get('scores', {}))}",
             f"- 置信度：{_derive_confidence(stock)}",
         ])
-        lines.extend(_build_data_audit_lines(stock))
-        lines.extend(_build_data_quality_verdict_lines(stock))
-        lines.extend(_build_data_source_meta_lines(stock))
-        lines.extend(_build_authenticity_verification_lines(stock))
-        lines.extend(_build_debate_risk_lines(stock))
-        lines.extend(_build_expert_identity_lines(stock))
-        lines.extend(_build_process_block_lines(stock))
-        lines.extend(_build_revenue_snapshot_lines(stock))
-        lines.extend(_build_shortline_signal_lines(stock))
-        lines.extend(_build_fundamental_expert_lines(stock))
-        lines.extend(_build_industry_research_lines(stock))
-        lines.extend(_build_event_hunter_lines(stock))
-        lines.extend(_build_supervisor_arbitration_lines(stock))
-        lines.extend(_build_sentiment_governance_lines(sentiment_governance))
-        warning = _build_reversal_warning(stock)
-        if warning:
-            lines.extend(["", warning])
-        lines.extend(_build_evidence_lines(stock))
-        lines.extend(_build_machine_readable_blocks(stock))
+        _extend_stock_detail_sections(lines, stock, sentiment_governance)
         lines.append("")
     lines.extend(_build_pool_machine_readable_blocks(stocks))
     return "\n".join(lines).strip()
+
+
+def _extend_stock_detail_sections(lines: list, stock: dict, sentiment_governance: dict) -> None:
+    lines.extend(_build_data_audit_lines(stock))
+    lines.extend(_build_data_quality_verdict_lines(stock))
+    lines.extend(_build_data_source_meta_lines(stock))
+    lines.extend(_build_authenticity_verification_lines(stock))
+    lines.extend(_build_debate_risk_lines(stock))
+    lines.extend(_build_expert_identity_lines(stock))
+    lines.extend(_build_process_block_lines(stock))
+    lines.extend(_build_revenue_snapshot_lines(stock))
+    lines.extend(_build_shortline_signal_lines(stock))
+    lines.extend(_build_fundamental_expert_lines(stock))
+    lines.extend(_build_industry_research_lines(stock))
+    lines.extend(_build_event_hunter_lines(stock))
+    lines.extend(_build_supervisor_arbitration_lines(stock))
+    lines.extend(_build_sentiment_governance_lines(sentiment_governance))
+    warning = _build_reversal_warning(stock)
+    if warning:
+        lines.extend(["", warning])
+    lines.extend(_build_evidence_lines(stock))
+    lines.extend(_build_machine_readable_blocks(stock))
 
 
 def _build_machine_readable_blocks(stock: dict) -> list:
