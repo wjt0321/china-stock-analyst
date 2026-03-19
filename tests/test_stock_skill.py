@@ -1711,6 +1711,12 @@ class TestStockSkill(unittest.TestCase):
                 self.assertEqual(daily["remaining"], 0)
                 self.assertEqual(daily["limit"], 2)
 
+    def test_daily_quota_should_block_when_counter_persist_failed(self):
+        with mock.patch.object(su, "_load_daily_counter", return_value={"date": datetime.now().strftime("%Y-%m-%d"), "count": 0}), \
+            mock.patch.object(su, "_save_daily_counter", return_value=False):
+            with self.assertRaises(su.EastmoneyQuotaPersistError):
+                su.consume_eastmoney_daily_quota()
+
     def test_desensitize_payload_should_mask_sensitive_fields(self):
         payload = {
             "apikey": "abcdef123456",
@@ -1814,6 +1820,69 @@ class TestStockSkill(unittest.TestCase):
 
     def test_is_stock_name_alias_should_support_st_prefixed_alias_mapping(self):
         self.assertTrue(su.is_stock_name_alias("ST上海浦东发展银行", "浦发银行"))
+
+    def test_build_skill_chain_should_switch_to_single_flow_when_team_disabled(self):
+        plan = build_skill_chain_plan(use_team=False)
+        self.assertEqual(plan.get("mode"), "single_flow")
+        self.assertEqual(plan.get("execution_profile"), "single_flow")
+        self.assertEqual(plan.get("steps"), ["collect_data", "render_report"])
+        self.assertEqual(plan.get("team_rules"), {})
+
+    def test_to_int_should_parse_large_chinese_numbers(self):
+        self.assertEqual(tr._to_int("两百"), 200)
+        self.assertEqual(tr._to_int("一百零一"), 101)
+        self.assertEqual(tr._to_int("三千二百"), 3200)
+
+    def test_intent_cache_ttl_should_use_created_at_instead_of_updated_at(self):
+        self._clear_team_router_runtime_state()
+        request = "请查询600000行情成交额"
+        stale_created = (datetime.now() - timedelta(seconds=tr.INTENT_CACHE_TTL_SECONDS + 30)).strftime("%Y-%m-%d %H:%M:%S")
+        fresh_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        payload = {
+            "items": {
+                tr._build_intent_cache_key(tr._normalize_request(request)): {
+                    "created_at": stale_created,
+                    "updated_at": fresh_updated,
+                    "hit_count": 9,
+                    "response": {"intent_category": "query"},
+                }
+            }
+        }
+        with mock.patch.object(tr, "_load_json_file", return_value=payload), \
+            mock.patch.object(tr, "_save_json_file", return_value=True):
+            routed = tr.route_eastmoney_intent(request)
+        self.assertFalse(routed.get("cache", {}).get("cache_hit"))
+        self.assertEqual(routed.get("cache", {}).get("hit_count"), 1)
+
+    def test_metadata_passthrough_quote_snapshot_should_use_none_for_unfilled_values(self):
+        meta = tr._build_metadata_passthrough_meta("600000", "浦发银行")
+        self.assertIsNone(meta.get("quote_snapshot", {}).get("last_price"))
+        self.assertIsNone(meta.get("quote_snapshot", {}).get("change_percent"))
+
+    def test_advice_should_handle_none_or_na_change_without_crash(self):
+        advice_none = _generate_advice({"fund_flow": {"main": "0"}, "price_info": {"change": None}})
+        advice_na = _generate_advice({"fund_flow": {"main": "0"}, "price_info": {"change": "N/A"}})
+        self.assertEqual(advice_none, "建议关注基本面和长期走势")
+        self.assertEqual(advice_na, "建议关注基本面和长期走势")
+
+    def test_field_conflict_should_cover_main_and_turnover(self):
+        self.assertTrue(
+            gr._has_field_value_conflict(
+                "main",
+                [{"value": "主力净流入1000万"}, {"value": "主力净流入1700万"}],
+            )
+        )
+        self.assertTrue(
+            gr._has_field_value_conflict(
+                "turnover",
+                [{"value": "换手率2.0%"}, {"value": "换手率2.8%"}],
+            )
+        )
+
+    def test_previous_trading_day_should_skip_configured_holiday(self):
+        with mock.patch.dict("os.environ", {"CN_A_SHARE_HOLIDAYS": "2026-10-01"}, clear=False):
+            previous = gr._previous_trading_day(datetime(2026, 10, 2))
+        self.assertEqual(previous.strftime("%Y-%m-%d"), "2026-09-30")
 
 if __name__ == "__main__":
     unittest.main()

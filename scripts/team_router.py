@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import re
 import threading
 from datetime import datetime, timedelta
@@ -46,6 +47,7 @@ _INTENT_CACHE_FILE = Path(__file__).resolve().parent / ".team_router_intent_cach
 _INTENT_ROUTE_LOG_FILE = Path(__file__).resolve().parent / ".team_router_intent_routes.json"
 _INTENT_LOCK = threading.Lock()
 _INTENT_RUNTIME_FALLBACK: dict = {}
+LOGGER = logging.getLogger(__name__)
 _INTENT_PRIORITY = {
     "stock-screen": 3,
     "query": 2,
@@ -133,6 +135,10 @@ def should_use_agent_team(user_request: str) -> dict:
 def build_skill_chain_plan(use_team: bool, execution_profile: str = "full_parallel") -> dict:
     normalized_profile = str(execution_profile or "full_parallel").strip().lower()
     lite_profile = normalized_profile == "lite_parallel"
+    single_flow_steps = [
+        "collect_data",
+        "render_report",
+    ]
     lite_steps = [
         "run_data_auditor",
         "collect_data",
@@ -160,10 +166,10 @@ def build_skill_chain_plan(use_team: bool, execution_profile: str = "full_parall
     ]
     if not use_team:
         return {
-            "mode": "agent_team",
-            "execution_profile": "lite_parallel",
-            "steps": lite_steps,
-            "team_rules": build_shortline_supervisor_rules(),
+            "mode": "single_flow",
+            "execution_profile": "single_flow",
+            "steps": single_flow_steps,
+            "team_rules": {},
         }
     return {
         "mode": "agent_team",
@@ -453,7 +459,12 @@ def _apply_intent_cache(route: dict, gate: dict, normalized_request: str) -> dic
                 "hit_count": hit_count,
                 "response": cached_response,
             }
-            _save_json_file(_INTENT_CACHE_FILE, {"items": items})
+            if not _save_json_file(_INTENT_CACHE_FILE, {"items": items}):
+                _INTENT_RUNTIME_FALLBACK["last_intent_cache_write"] = {
+                    "key": cache_key,
+                    "updated_at": _now_text(now),
+                    "hit_count": hit_count,
+                }
             return {
                 "key": cache_key,
                 "cache_hit": cache_hit,
@@ -470,7 +481,12 @@ def _apply_intent_cache(route: dict, gate: dict, normalized_request: str) -> dic
             "hit_count": 1,
             "response": {"intent_category": route.get("intent_category", "none"), "gate_passed": gate.get("passed", False)},
         }
-        _save_json_file(_INTENT_CACHE_FILE, {"items": items})
+        if not _save_json_file(_INTENT_CACHE_FILE, {"items": items}):
+            _INTENT_RUNTIME_FALLBACK["last_intent_cache_write"] = {
+                "key": cache_key,
+                "updated_at": _now_text(now),
+                "hit_count": 1,
+            }
     return {
         "key": cache_key,
         "cache_hit": False,
@@ -483,8 +499,8 @@ def _apply_intent_cache(route: dict, gate: dict, normalized_request: str) -> dic
 def _cleanup_intent_cache(items: dict, now: datetime) -> None:
     expired_keys = []
     for key, value in items.items():
-        updated_at = _parse_cache_time(value.get("updated_at"))
-        if not updated_at or (now - updated_at).total_seconds() > INTENT_CACHE_TTL_SECONDS:
+        created_at = _parse_cache_time(value.get("created_at")) or _parse_cache_time(value.get("updated_at"))
+        if not created_at or (now - created_at).total_seconds() > INTENT_CACHE_TTL_SECONDS:
             expired_keys.append(key)
     for key in expired_keys:
         items.pop(key, None)
@@ -569,17 +585,17 @@ def _build_metadata_passthrough_meta(stock_code: str, stock_name: str = "") -> d
     base["quote_snapshot"] = {
         "symbol": stock_code,
         "name": (stock_name or "").strip(),
-        "last_price": "",
-        "change_percent": "",
+        "last_price": None,
+        "change_percent": None,
     }
     return base
 
 
 def _is_cache_alive(cache_item: dict, now: datetime) -> bool:
-    updated_at = _parse_cache_time(cache_item.get("updated_at"))
-    if not updated_at:
+    created_at = _parse_cache_time(cache_item.get("created_at")) or _parse_cache_time(cache_item.get("updated_at"))
+    if not created_at:
         return False
-    return (now - updated_at).total_seconds() <= INTENT_CACHE_TTL_SECONDS
+    return (now - created_at).total_seconds() <= INTENT_CACHE_TTL_SECONDS
 
 
 def _parse_cache_time(text: str):
@@ -624,7 +640,8 @@ def _save_json_file(file_path: Path, payload: dict) -> bool:
         with file_path.open("w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
         return True
-    except Exception:
+    except Exception as exc:
+        LOGGER.warning("写入JSON文件失败 path=%s err=%s", file_path, str(exc))
         return False
 
 
@@ -765,7 +782,37 @@ def _to_int(raw: str) -> int | None:
         return mapping[raw[0]] * 10
     if len(raw) == 3 and raw[1] == "十" and raw[0] in mapping and raw[2] in mapping:
         return mapping[raw[0]] * 10 + mapping[raw[2]]
-    return None
+    return _parse_chinese_int(raw)
+
+
+def _parse_chinese_int(raw: str) -> int | None:
+    digits = {"零": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "两": 2}
+    units = {"十": 10, "百": 100, "千": 1000, "万": 10000}
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if any(ch not in digits and ch not in units for ch in text):
+        return None
+    total = 0
+    section = 0
+    number = 0
+    for ch in text:
+        if ch in digits:
+            number = digits[ch]
+            continue
+        unit = units[ch]
+        if unit == 10000:
+            section = section + number if number else section
+            total += section * unit
+            section = 0
+            number = 0
+            continue
+        if number == 0:
+            number = 1
+        section += number * unit
+        number = 0
+    final_value = total + section + number
+    return final_value if final_value > 0 else None
 
 
 def _has_any_keyword(request: str, keywords: list) -> bool:

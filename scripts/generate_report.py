@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from datetime import datetime, timedelta
 from team_router import should_use_agent_team, build_skill_chain_plan
@@ -809,7 +810,8 @@ def _has_timestamp_conflict(timestamps: list, threshold_minutes: int) -> bool:
 
 
 def _has_field_value_conflict(field: str, records: list) -> bool:
-    if str(field or "").strip() not in {"price", "change"}:
+    field_name = str(field or "").strip()
+    if field_name not in {"price", "change", "main", "retail", "turnover"}:
         return False
     values = []
     for item in records:
@@ -821,10 +823,14 @@ def _has_field_value_conflict(field: str, records: list) -> bool:
         return False
     min_value = min(values)
     max_value = max(values)
-    if field == "price":
+    if field_name == "price":
         baseline = max(abs((min_value + max_value) / 2), 1.0)
         return (max_value - min_value) / baseline > 0.05
-    return abs(max_value - min_value) > 1.2
+    if field_name == "change":
+        return abs(max_value - min_value) > 1.2
+    baseline = max(abs((min_value + max_value) / 2), 1.0)
+    threshold = {"main": 0.35, "retail": 0.35, "turnover": 0.25}.get(field_name, 0.3)
+    return (max_value - min_value) / baseline > threshold
 
 
 def _extract_numeric_value(text: str):
@@ -1289,7 +1295,7 @@ def _validate_trading_day_timeliness(report: dict, request_date: str = "") -> di
         reason_codes.append(FAILURE_CODE_TRADING_DAY_STALE)
     else:
         latest_ts = max(timestamps)
-        if _is_trading_weekday(request_dt):
+        if _is_trading_day(request_dt):
             if latest_ts.date() != request_dt.date():
                 reasons.append(
                     f"交易日时效不通过: 最新时间戳{latest_ts.strftime('%Y-%m-%d %H:%M')} 非请求交易日{request_dt.strftime('%Y-%m-%d')}"
@@ -1342,11 +1348,32 @@ def _is_trading_weekday(target_dt: datetime) -> bool:
     return target_dt.weekday() < 5
 
 
+def _load_trading_holiday_overrides() -> set:
+    dates = set()
+    raw = str(os.getenv("CN_A_SHARE_HOLIDAYS", "")).strip()
+    if not raw:
+        return dates
+    for token in raw.split(","):
+        text = token.strip()
+        if not text:
+            continue
+        parsed = _parse_day(text)
+        if parsed:
+            dates.add(parsed.date())
+    return dates
+
+
+def _is_trading_day(target_dt: datetime, holiday_dates: set = None) -> bool:
+    holidays = holiday_dates if isinstance(holiday_dates, set) else _load_trading_holiday_overrides()
+    return _is_trading_weekday(target_dt) and target_dt.date() not in holidays
+
+
 def _previous_trading_day(target_dt: datetime) -> datetime:
     cursor = target_dt
+    holiday_dates = _load_trading_holiday_overrides()
     while True:
         cursor = cursor - timedelta(days=1)
-        if _is_trading_weekday(cursor):
+        if _is_trading_day(cursor, holiday_dates=holiday_dates):
             return cursor
 
 
@@ -1863,7 +1890,8 @@ def _generate_advice(report: dict) -> str:
     change = price_info.get('change', '0')
 
     try:
-        change_val = float(change.replace('%', ''))
+        change_text = str(change or "").replace("%", "").strip()
+        change_val = float(change_text or "0")
         if change_val > 5:
             advice_parts.append("短期涨幅较大，谨慎追高")
         elif change_val < -5:

@@ -118,6 +118,10 @@ class EastmoneyDecodeError(EastmoneyPostError):
     """响应解析异常"""
 
 
+class EastmoneyQuotaPersistError(EastmoneyPostError):
+    """日配额持久化异常"""
+
+
 def _build_standard_result(data: Any = None, meta: dict = None) -> dict:
     return {
         "success": True,
@@ -480,10 +484,15 @@ def _load_daily_counter() -> dict:
     }
 
 
-def _save_daily_counter(counter: dict) -> None:
-    _EASTMONEY_COUNTER_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with _EASTMONEY_COUNTER_FILE.open("w", encoding="utf-8") as f:
-        json.dump(counter, f, ensure_ascii=False)
+def _save_daily_counter(counter: dict) -> bool:
+    try:
+        _EASTMONEY_COUNTER_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with _EASTMONEY_COUNTER_FILE.open("w", encoding="utf-8") as f:
+            json.dump(counter, f, ensure_ascii=False)
+        return True
+    except Exception as exc:
+        LOGGER.warning("持久化东财日配额失败 path=%s err=%s", _EASTMONEY_COUNTER_FILE, str(exc))
+        return False
 
 
 def consume_eastmoney_daily_quota() -> dict:
@@ -500,7 +509,8 @@ def consume_eastmoney_daily_quota() -> dict:
                 f"东财接口日调用已达上限 {EASTMONEY_DAILY_LIMIT} 次，今日不再继续请求"
             )
         counter["count"] += 1
-        _save_daily_counter(counter)
+        if not _save_daily_counter(counter):
+            raise EastmoneyQuotaPersistError("东财接口日配额持久化失败，已阻断本次请求以避免配额失真")
     return {
         "date": counter["date"],
         "count": counter["count"],
