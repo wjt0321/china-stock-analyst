@@ -3,6 +3,12 @@ import re
 import sys
 from pathlib import Path
 
+# 候选股票数据表章节标题模式，支持「10只」「10 只」等变体，便于模板调整
+CANDIDATE_TABLE_SECTION_PATTERNS = [
+    r"## 八、\d*\s*只?候选股票完整数据(?P<section>.*?)(?=\n---|\Z)",
+    r"## 八、.*候选.*完整数据(?P<section>.*?)(?=\n---|\Z)",
+]
+
 
 def _extract_number(text: str):
     matched = re.search(r"\d+(?:\.\d+)?", str(text or ""))
@@ -34,11 +40,10 @@ def _extract_recommendation_blocks(content: str) -> list:
 
 
 def _extract_candidate_table(content: str) -> dict:
-    section_match = re.search(
-        r"## 八、10只候选股票完整数据(?P<section>.*?)(?=\n---|\Z)",
-        content,
-        re.S,
-    )
+    for pattern in CANDIDATE_TABLE_SECTION_PATTERNS:
+        section_match = re.search(pattern, content, re.S)
+        if section_match:
+            break
     if not section_match:
         return {}
     section = section_match.group("section")

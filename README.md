@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-purple.svg)
-![Tests](https://img.shields.io/badge/Tests-94%20Passed-success.svg)
+![Tests](https://img.shields.io/badge/Tests-115%20Passed-success.svg)
 
 **📈 A股短线交易分析助手 | Team-First 并行专家系统**
 
@@ -37,7 +37,7 @@
 | 🔁 **复杂指令连续性守护** | 并行节点支持隔离重试与汇总，不因局部问题回退为单线流程 |
 | 🧠 **双路径数据接入** | 先用 Web Search 获取高覆盖候选，再用东方财富结构化接口复核关键字段，平衡额度与准确性 |
 | 🛰️ **东方财富免费 API 接入** | 新增 `news-search / query / stock-screen` 三类外部能力，补强资讯、结构化金融数据与选股结果可信度 |
-| 🔐 **安全密钥加载** | 支持 `EASTMONEY_APIKEY` 环境变量优先，回退读取项目内 `.env.local/.env`，并默认忽略提交 |
+| 🔐 **安全密钥加载** | 支持 `EASTMONEY_APIKEY` / `EASTMONEY_API_KEY` / `EM_API_KEY`（推荐 `EASTMONEY_APIKEY`），回退读取 `.env.local/.env` |
 | 💸 **免费额度治理** | 内置 50 次/日配额控制、关键性门控、缓存去重与空结果引导，优先把额度用在关键数据查询 |
 
 ---
@@ -63,7 +63,7 @@ git clone https://github.com/wjt0321/china-stock-analyst.git
 python -m unittest tests/test_stock_skill.py -v
 ```
 
-当前测试结果：**94 个用例全部通过** ✅
+当前测试结果：**115 个用例全部通过** ✅
 
 ### 东方财富 API 配置（必做）
 
@@ -78,7 +78,7 @@ EASTMONEY_ENDPOINT_QUERY=/query
 EASTMONEY_ENDPOINT_STOCK_SCREEN=/stock-screen
 ```
 
-3. 也可直接使用系统环境变量 `EASTMONEY_APIKEY`，其优先级高于 `.env.local/.env`。
+3. 也可直接使用系统环境变量，支持 `EASTMONEY_APIKEY` / `EASTMONEY_API_KEY` / `EM_API_KEY`（推荐 `EASTMONEY_APIKEY`），优先级高于 `.env.local/.env`。
 4. 仓库已提供 `.env.example` 模板，且 `.gitignore` 默认忽略 `.env` 与 `.env.local`，避免密钥泄露。
 
 ---
@@ -261,7 +261,7 @@ python -m unittest tests/test_stock_skill.py -v
 - 舆情降噪与评分封顶
 - 新增专家与主管仲裁
 - 复杂请求端到端闭环验证
-- 当前回归测试总量：**94 项（全部通过）**
+- 当前回归测试总量：**115 项（全部通过）**
 
 ---
 
