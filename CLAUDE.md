@@ -19,13 +19,13 @@ python -m unittest tests.test_stock_skill.TestStockSkill.test_should_enable_agen
 python -m unittest tests.test_stock_skill.TestStockSkill -v
 ```
 
-测试覆盖范围：路由判定、数据审计、专家鉴别、舆情治理、东方财富 API 集成。当前回归测试：95 项全部通过。
+测试覆盖范围：路由判定、数据审计、专家鉴别、舆情治理、东方财富 API 集成。当前回归测试：115 项全部通过。
 
 ## 目录结构
 
 ```
 china-stock-analyst/
-├── SKILL.md                    # 技能完整文档（v2.3+）
+├── SKILL.md                    # 技能完整文档（v2.4.2）
 ├── README.md                   # 技能入口定义
 ├── .env.example                # 东方财富 API 配置模板
 ├── scripts/
