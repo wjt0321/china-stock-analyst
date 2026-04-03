@@ -12,8 +12,8 @@ EVENT_POSITIVE_KEYWORDS = ["中标", "回购", "增持", "政策支持", "订单
 EVENT_NEGATIVE_KEYWORDS = ["处罚", "问询", "减持", "终止", "风险提示", "监管关注"]
 EXPERT_PRICE_TOLERANCE_RATIO = 0.08
 EXPECTED_EXPERT_AGENTS = {
-    "industry_researcher": "expert_industry_researcher",
-    "event_hunter": "expert_event_hunter",
+    "industry_researcher": "stock-industry-researcher",
+    "event_hunter": "stock-event-hunter",
 }
 
 FAILURE_CODE_IDENTITY_CODE_INVALID = "IDENTITY_CODE_INVALID"

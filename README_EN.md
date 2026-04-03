@@ -2,10 +2,10 @@
 
 <div align="center">
 
-![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
+![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-purple.svg)
-![Tests](https://img.shields.io/badge/Tests-94%20Passed-success.svg)
+![Tests](https://img.shields.io/badge/Tests-130%20Passed-success.svg)
 
 **A-Share Short-term Trading Analysis Assistant | Team-First Parallel Expert System**
 
@@ -20,6 +20,15 @@
 > A specialized A-share analysis skill designed for **Claude Code**, featuring a **"Short-term Trading Signals + Revenue Quality"** dual-track assessment system.
 
 The current version has been upgraded to a **Team-First** architecture: default parallel expert collaboration, front-loaded data authenticity audit, enhanced automatic activation for complex instructions with non-interrupting execution, and now uses a **Web Search primary path + East Money structured verification** model.
+
+### Claude Code Skills Compatibility
+
+- **Overall fit: high**
+- **Clear entrypoint**: `SKILL.md` is the actual Claude Code skill entry, while the README serves as install, engineering, and release documentation
+- **Good repository shape for Skills**: `SKILL.md + Python helper scripts + regression tests`
+- **Portable by design**: core scripts rely on Python standard library and relative paths
+- **Strong guardrails**: authenticity audit, collection-quality gate, identity checks, and report post-checks are all implemented
+- **Operational note**: this repository is not a standalone web service; scripts and tests are intended to run from the repository root
 
 ---
 
@@ -63,9 +72,9 @@ Copy the project to Claude Code skills directory:
 python -m unittest tests/test_stock_skill.py -v
 ```
 
-Current test results: **94 test cases all passed**
+Current test results: **130 test cases all passed**
 
-### East Money API Configuration (Required)
+### East Money API Configuration (Optional Enhancement)
 
 1. Apply for your own API Key from the East Money Skills page (do not use others' keys).
 2. Create `.env.local` (recommended) or `.env` in the project root:
@@ -81,9 +90,15 @@ EASTMONEY_ENDPOINT_STOCK_SCREEN=/stock-screen
 3. You can also use system environment variable `EASTMONEY_APIKEY`, which takes priority over `.env.local/.env`.
 4. The repository provides `.env.example` template, and `.gitignore` excludes `.env` and `.env.local` by default to prevent key leakage.
 
+Notes:
+
+- **The main workflow still runs without an API key**
+- The current primary path is **Web Search**
+- East Money is used for structured supplementation, key-field verification, and stock screening enhancement
+
 ---
 
-## Data Integration Details (v2.4.2)
+## Data Integration Details (v2.4.3)
 
 ### Why this integration
 
@@ -110,6 +125,12 @@ EASTMONEY_ENDPOINT_STOCK_SCREEN=/stock-screen
 - `scripts/team_router.py`
   - Added symbol metadata passthrough (source function, fetched timestamp, validation conclusion, reason codes)
   - Unified reason codes and user-facing tips
+- `scripts/report_quality_gate.py`
+  - Added stop-loss, score-label consistency, and risk-vs-recommendation checks
+  - Hardened detection for template variants, missing candidate tables, and missing recommendation blocks
+- `scripts/run_report_quality_checks.py`
+  - Added aggregated rule summary, severity summary, and repair suggestions
+  - Produces structured output that can be turned into a repair checklist for historical reports
 
 ### Report-level changes
 
@@ -222,10 +243,14 @@ china-stock-analyst/
 ├── SKILL.md
 ├── README.md
 ├── LICENSE
+├── README_EN.md
 ├── scripts/
 │   ├── team_router.py
 │   ├── generate_report.py
-│   └── stock_utils.py
+│   ├── stock_utils.py
+│   ├── report_constants.py
+│   ├── report_quality_gate.py
+│   └── run_report_quality_checks.py
 ├── agents/
 │   ├── stock-data-auditor.md
 │   ├── stock-fundamental-expert.md
@@ -243,7 +268,9 @@ china-stock-analyst/
 ├── references/
 │   └── valuation_model_guide.md
 └── docs/
-    └── agent-teams-blueprint.md
+    ├── agent-teams-blueprint.md
+    ├── REPORT_QUALITY_REPAIR_CHECKLIST_20260403.md
+    └── plans/
 ```
 
 ---
@@ -260,8 +287,16 @@ Test coverage includes:
 - Expert identifier, identity and price verification, process blocking
 - Sentiment noise reduction and score capping
 - New experts and supervisor arbitration
+- Report quality gates, batch quality checks, and repair suggestion aggregation
 - Complex request end-to-end closed-loop verification
-- Current regression test total: **94 items (all passed)**
+- Current regression test total: **130 items (all passed)**
+
+Common quality-check commands:
+
+```bash
+python scripts/report_quality_gate.py stock-reports\\000767_晋控电力_20260310.md
+python scripts/run_report_quality_checks.py
+```
 
 ---
 
@@ -272,6 +307,20 @@ This project is licensed under the **MIT License**. See [LICENSE](LICENSE) for d
 ---
 
 ## Changelog
+
+### v2.4.3 (2026-04-03)
+
+- Release/Tag: `2.4.3`
+- **Documentation aligned with the current skill shape**
+  - Rewrote `SKILL.md` into a concise Claude Code Skills-oriented rules file
+  - Updated both READMEs to reflect the actual data-source strategy and repository layout
+- **Report quality gate expanded**
+  - Added stop-loss, score-label consistency, and risk-vs-recommendation checks
+  - Hardened detection for title variants, missing candidate tables, and missing recommendation blocks
+- **Batch quality checks improved**
+  - `run_report_quality_checks.py` now outputs aggregated rule summaries, severity stats, and repair suggestions
+  - Added a repair checklist document for the existing `stock-reports`
+- Regression tests passed: **130/130**
 
 ### v2.4.2 (2026-03-17)
 

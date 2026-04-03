@@ -2,10 +2,10 @@
 
 <div align="center">
 
-![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
+![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-purple.svg)
-![Tests](https://img.shields.io/badge/Tests-115%20Passed-success.svg)
+![Tests](https://img.shields.io/badge/Tests-130%20Passed-success.svg)
 
 **📈 A股短线交易分析助手 | Team-First 并行专家系统**
 
@@ -20,6 +20,15 @@
 > 一个专为 **Claude Code** 设计的 A 股分析技能，采用「**短线交易信号 + 营收质量**」双轨研判体系。
 
 当前版本已升级为 **Team-First** 架构：默认并行专家协作、前置数据真实性审计、强化复杂指令自动激活与不中断执行；并完成 **Web Search 主路径 + 东方财富结构化复核** 双路径协同。
+
+### 与 Claude Code Skills 的适配度
+
+- **适配度结论：高**
+- **技能入口明确**：Claude Code 实际入口为 `SKILL.md`，README 主要承担安装、工程说明与发布说明
+- **运行形态合适**：`SKILL.md + Python 辅助脚本 + 回归测试` 的结构，符合 Claude Code Skills 的仓库形态
+- **迁移成本低**：核心脚本仅依赖 Python 标准库，路径以相对路径和 `Path(__file__)` 为主
+- **质量约束完整**：具备数据真实性审计、采集质量门禁、身份校验、报告后置质量检查
+- **当前注意事项**：项目不是独立服务，而是 Skill 主文档配合脚本工具；推荐在仓库根目录内运行脚本与测试
 
 ---
 
@@ -65,7 +74,7 @@ python -m unittest tests/test_stock_skill.py -v
 
 当前测试结果：**115 个用例全部通过** ✅
 
-### 东方财富 API 配置（必做）
+### 东方财富 API 配置（可选增强）
 
 1. 到东方财富 Skills 页面申请你自己的 API Key（请勿使用他人密钥）。
 2. 在项目根目录创建 `.env.local`（推荐）或 `.env`：
@@ -81,9 +90,15 @@ EASTMONEY_ENDPOINT_STOCK_SCREEN=/stock-screen
 3. 也可直接使用系统环境变量，支持 `EASTMONEY_APIKEY` / `EASTMONEY_API_KEY` / `EM_API_KEY`（推荐 `EASTMONEY_APIKEY`），优先级高于 `.env.local/.env`。
 4. 仓库已提供 `.env.example` 模板，且 `.gitignore` 默认忽略 `.env` 与 `.env.local`，避免密钥泄露。
 
+说明：
+
+- **无 API Key 仍可运行主流程**
+- 当前主路径是 **Web Search**
+- 东方财富用于结构化补充、关键字段复核与选股增强
+
 ---
 
-## 🔌 数据接入说明（v2.4.2）
+## 🔌 数据接入说明（v2.4.3）
 
 ### 接入目标
 
@@ -110,6 +125,12 @@ EASTMONEY_ENDPOINT_STOCK_SCREEN=/stock-screen
 - `scripts/team_router.py`
   - 透传标的元信息（来源函数、抓取时间、校验结论、失败原因码）
   - 统一失败原因码与用户可读提示
+- `scripts/report_quality_gate.py`
+  - 扩展止损位、标签-分数一致性、风险-建议冲突校验
+  - 补强模板变体、候选表缺失、推荐段缺失等防漏检规则
+- `scripts/run_report_quality_checks.py`
+  - 输出规则聚合摘要、严重级别统计与修复建议
+  - 可生成历史报告修复清单所需的结构化结果
 
 ### 报告侧变化
 
@@ -222,10 +243,14 @@ china-stock-analyst/
 ├── SKILL.md
 ├── README.md
 ├── LICENSE
+├── README_EN.md
 ├── scripts/
 │   ├── team_router.py
 │   ├── generate_report.py
-│   └── stock_utils.py
+│   ├── stock_utils.py
+│   ├── report_constants.py
+│   ├── report_quality_gate.py
+│   └── run_report_quality_checks.py
 ├── agents/
 │   ├── stock-data-auditor.md
 │   ├── stock-fundamental-expert.md
@@ -243,7 +268,9 @@ china-stock-analyst/
 ├── references/
 │   └── 估值模型说明.md
 └── docs/
-    └── agent-teams-blueprint.md
+    ├── agent-teams-blueprint.md
+    ├── REPORT_QUALITY_REPAIR_CHECKLIST_20260403.md
+    └── plans/
 ```
 
 ---
@@ -260,8 +287,16 @@ python -m unittest tests/test_stock_skill.py -v
 - 专家鉴别、身份与价格校验、流程阻断
 - 舆情降噪与评分封顶
 - 新增专家与主管仲裁
+- 报告质量门禁、批量质量检查、修复建议聚合
 - 复杂请求端到端闭环验证
-- 当前回归测试总量：**115 项（全部通过）**
+- 当前回归测试总量：**130 项（全部通过）**
+
+常用质量检查命令：
+
+```bash
+python scripts/report_quality_gate.py stock-reports\\000767_晋控电力_20260310.md
+python scripts/run_report_quality_checks.py
+```
 
 ---
 
@@ -272,6 +307,20 @@ python -m unittest tests/test_stock_skill.py -v
 ---
 
 ## 📅 更新日志
+
+### v2.4.3 (2026-04-03)
+
+- 发布 Release/Tag：`2.4.3`
+- **README 与 SKILL 文档收敛**：
+  - 重写 `SKILL.md`，收敛为适合 Claude Code Skills 的主规则文件
+  - README/README_EN 同步更新为当前真实运行形态与数据源策略
+- **报告质量门禁增强**：
+  - 新增止损位、标签-分数一致性、风险-建议冲突校验
+  - 补强候选表标题变体、候选表缺失、推荐段缺失等防漏检规则
+- **批量质量检查增强**：
+  - `run_report_quality_checks.py` 新增规则聚合摘要、严重级别统计与修复建议输出
+  - 基于现有 `stock-reports` 生成修复清单文档，便于人工逐项修正
+- 测试回归通过：**130 项全部通过**
 
 ### v2.4.2 (2026-03-17)
 

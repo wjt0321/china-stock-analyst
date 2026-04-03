@@ -652,7 +652,7 @@ def _now_text(now: datetime = None) -> str:
 
 def _build_industry_researcher_schema() -> dict:
     return {
-        "agent": "expert_industry_researcher",
+        "agent": "stock-industry-researcher",
         "required_input_fields": ["stock_code", "stock_name", "industry", "news", "as_of"],
         "required_output_fields": [
             "景气结论",
@@ -669,7 +669,7 @@ def _build_industry_researcher_schema() -> dict:
 
 def _build_event_hunter_schema() -> dict:
     return {
-        "agent": "expert_event_hunter",
+        "agent": "stock-event-hunter",
         "required_input_fields": ["stock_code", "stock_name", "news", "announcement", "policy_event", "as_of"],
         "required_output_fields": [
             "事件方向",
@@ -686,7 +686,7 @@ def _build_event_hunter_schema() -> dict:
 
 def _build_expert_identifier_schema() -> dict:
     return {
-        "agent": "expert_identifier_agent",
+        "agent": "stock-identity-auditor",
         "required_input_fields": ["stock_code", "price_info", "expert_outputs", "field_sources"],
         "required_output_fields": [
             "passed",

@@ -79,7 +79,8 @@ def parse_search_results_to_report(
         "collection_quality_gate": {
             "passed": True,
             "web_passed": True,
-            "eastmoney_passed": True,
+            "eastmoney_passed": False,
+            "eastmoney_status": "missing_optional",
             "reasons": [],
             "next_action": "continue",
         },
@@ -339,8 +340,8 @@ def _parse_financial(snippet: str) -> dict:
         parsed['as_of'] = as_of_extracted
         parsed['as_of_source'] = 'extracted'
     else:
-        parsed['as_of'] = datetime.now().strftime('%Y-%m-%d')
-        parsed['as_of_source'] = 'fallback_today'  # 无法从文本确认报告期，以当日作为兜底
+        parsed['as_of'] = ''
+        parsed['as_of_source'] = 'missing'
     return parsed
 
 
@@ -710,20 +711,22 @@ def _run_collection_quality_gate(report: dict) -> dict:
     web_passed = bool(audit_gate.get("passed", False))
     eastmoney_quality = _resolve_eastmoney_quality(report)
     eastmoney_passed = bool(eastmoney_quality.get("passed", False))
+    eastmoney_status = str(eastmoney_quality.get("status", "failed"))
     reasons = []
     if not web_passed:
         audit_reasons = audit_gate.get("downgrade_reasons", [])
         reason_text = "；".join(audit_reasons) if audit_reasons else "Web Search 审计未通过"
         reasons.append(f"web_search:{reason_text}")
-    if not eastmoney_passed:
+    if not eastmoney_passed and eastmoney_status != "missing_optional":
         eastmoney_reasons = eastmoney_quality.get("reasons", [])
         reason_text = "；".join(eastmoney_reasons) if eastmoney_reasons else "东财结构化校验未通过"
         reasons.append(f"eastmoney:{reason_text}")
-    passed = web_passed and eastmoney_passed
+    passed = web_passed and (eastmoney_passed or eastmoney_status == "missing_optional")
     return {
         "passed": passed,
         "web_passed": web_passed,
         "eastmoney_passed": eastmoney_passed,
+        "eastmoney_status": eastmoney_status,
         "reasons": reasons,
         "next_action": "continue" if passed else "downgrade_continue",
     }
@@ -742,7 +745,7 @@ def _resolve_eastmoney_quality(report: dict) -> dict:
             reasons.append(f"is_usable=false({missing_text})")
         if has_conflict:
             reasons.append("field_conflict_summary.has_conflict=true")
-        return {"passed": passed, "reasons": reasons}
+        return {"passed": passed, "reasons": reasons, "status": "verified" if passed else "failed"}
     router = report.get("eastmoney_router", {})
     critical_gate = router.get("critical_gate", {})
     reason_codes = critical_gate.get("reason_codes", [])
@@ -750,8 +753,9 @@ def _resolve_eastmoney_quality(report: dict) -> dict:
         return {
             "passed": False,
             "reasons": [f"critical_gate:{';'.join([str(code) for code in reason_codes])}"],
+            "status": "failed",
         }
-    return {"passed": False, "reasons": ["缺少东财结构化质量信息"]}
+    return {"passed": False, "reasons": [], "status": "missing_optional"}
 
 
 def _apply_collection_gate_downgrade(report: dict):
@@ -1011,7 +1015,7 @@ def _build_industry_research_output(report: dict) -> dict:
     elif negative_hits - positive_hits >= 2:
         inflection = "下行拐点风险增加"
     return {
-        "agent": "expert_industry_researcher",
+        "agent": "stock-industry-researcher",
         "schema_version": "v2",
         "schema_type": "structured_json",
         "stock_code": stock_code,
@@ -1071,7 +1075,7 @@ def _build_event_hunter_output(report: dict) -> dict:
     elif abs(positive_hits - negative_hits) >= 1:
         strength = "中"
     return {
-        "agent": "expert_event_hunter",
+        "agent": "stock-event-hunter",
         "schema_version": "v2",
         "schema_type": "structured_json",
         "stock_code": stock_code,
@@ -1517,7 +1521,7 @@ def _run_expert_identity_gate(report: dict) -> dict:
         canonical_name=report.get("canonical_name", ""),
     )
     return {
-        "agent": "expert_identifier_agent",
+        "agent": "stock-identity-auditor",
         "passed": passed,
         "identity_passed": identity_passed,
         "price_passed": price_passed,
@@ -1890,12 +1894,12 @@ def _generate_advice(report: dict) -> str:
 def format_obsidian_markdown_report(payload: dict) -> str:
     stocks = payload.get("stocks", [])
     date_text = payload.get("date", datetime.now().strftime("%Y-%m-%d"))
-    if payload.get("analysis_mode") == "agent_team":
-        mode = "stock_pool"
+    if len(stocks) <= 1:
+        mode = "single_stock"
     elif payload.get("analysis_mode") == "single_flow":
         mode = "single_stock"
     else:
-        mode = "single_stock" if len(stocks) <= 1 else "stock_pool"
+        mode = "stock_pool"
     if mode == "single_stock":
         return _build_single_stock_markdown(stocks[0] if stocks else {}, date_text)
     return _build_stock_pool_markdown(stocks, date_text)

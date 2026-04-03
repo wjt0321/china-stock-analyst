@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import generate_report as gr  # noqa: E402
+import report_quality_gate as rq  # noqa: E402
+import run_report_quality_checks as rqc  # noqa: E402
 import stock_utils as su  # noqa: E402
 import team_router as tr  # noqa: E402
 from generate_report import parse_search_results_to_report, _generate_advice  # noqa: E402
@@ -20,6 +22,12 @@ from team_router import should_use_agent_team, build_skill_chain_plan  # noqa: E
 
 
 class TestStockSkill(unittest.TestCase):
+    def _run_quality_gate_with_content(self, content: str) -> dict:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "report.md"
+            report_path.write_text(content, encoding="utf-8")
+            return rq.run_quality_gate(str(report_path))
+
     def _clear_team_router_runtime_state(self):
         for path in [getattr(tr, "_INTENT_CACHE_FILE", None), getattr(tr, "_INTENT_ROUTE_LOG_FILE", None)]:
             if path and path.exists():
@@ -293,6 +301,268 @@ class TestStockSkill(unittest.TestCase):
         self.assertIn("股票池", content)
         self.assertIn("晋控电力", content)
         self.assertIn("长源电力", content)
+
+    def test_agent_team_single_stock_should_still_generate_single_title(self):
+        payload = {
+            "date": "2026-03-10",
+            "analysis_mode": "agent_team",
+            "stocks": [
+                {
+                    "stock_code": "000767",
+                    "stock_name": "晋控电力",
+                    "label": "可做",
+                    "scores": {"momentum": 82, "revenue": 76, "risk": 71},
+                }
+            ],
+        }
+        content = gr.format_obsidian_markdown_report(payload)
+        self.assertIn("000767_晋控电力", content)
+        self.assertNotIn("股票池", content)
+
+    def test_report_quality_gate_should_flag_stop_loss_above_current_price(self):
+        result = self._run_quality_gate_with_content(
+            """# 测试报告
+
+### 测试股（600000）
+| 项目 | 值 |
+|------|------|
+| **收盘价** | 10.00元 |
+| **综合评分** | 77分 |
+| **最终标签** | 可做 |
+| **止损位** | 10.50元 |
+| **风险等级** | 中 |
+| **更新时间** | 2026-03-10 14:30 |
+
+---
+
+## 八、10只候选股票完整数据
+| 股票代码 | 名称 | 收盘价 | 今日涨跌 | 备注 |
+|------|------|------|------|------|
+| 600000 | 测试股 | 10.00元 | +1.2% | - |
+"""
+        )
+        rules = {item["rule"] for item in result["issues"]}
+        self.assertIn("stop_loss_above_current_price", rules)
+
+    def test_report_quality_gate_should_flag_score_label_inconsistency(self):
+        result = self._run_quality_gate_with_content(
+            """# 测试报告
+
+### 测试股（600000）
+| 项目 | 值 |
+|------|------|
+| **收盘价** | 10.00元 |
+| **综合评分** | 82分 |
+| **最终标签** | 回避 |
+| **止损位** | 9.50元 |
+| **风险等级** | 中 |
+| **更新时间** | 2026-03-10 14:30 |
+
+---
+
+## 八、10只候选股票完整数据
+| 股票代码 | 名称 | 收盘价 | 今日涨跌 | 备注 |
+|------|------|------|------|------|
+| 600000 | 测试股 | 10.00元 | +1.2% | - |
+"""
+        )
+        rules = {item["rule"] for item in result["issues"]}
+        self.assertIn("score_label_inconsistent", rules)
+
+    def test_report_quality_gate_should_flag_high_risk_with_doable_label(self):
+        result = self._run_quality_gate_with_content(
+            """# 测试报告
+
+### 测试股（600000）
+| 项目 | 值 |
+|------|------|
+| **收盘价** | 10.00元 |
+| **综合评分** | 78分 |
+| **最终标签** | 可做 |
+| **止损位** | 9.50元 |
+| **风险等级** | 高 |
+| **更新时间** | 2026-03-10 14:30 |
+
+---
+
+## 八、10只候选股票完整数据
+| 股票代码 | 名称 | 收盘价 | 今日涨跌 | 备注 |
+|------|------|------|------|------|
+| 600000 | 测试股 | 10.00元 | +1.2% | - |
+"""
+        )
+        rules = {item["rule"] for item in result["issues"]}
+        self.assertIn("high_risk_with_doable_label", rules)
+
+    def test_report_quality_gate_should_support_candidate_section_title_variants(self):
+        result = self._run_quality_gate_with_content(
+            """# 测试报告
+
+### 测试股（600000）
+| 项目 | 值 |
+|------|------|
+| **收盘价** | 10.00元 |
+| **综合评分** | 78分 |
+| **最终标签** | 观察 |
+| **止损位** | 9.20元 |
+| **风险等级** | 中 |
+| **更新时间** | 2026-03-10 14:30 |
+
+---
+
+## 八、候选股票数据总览
+| 股票代码 | 名称 | 收盘价 | 今日涨跌 | 备注 |
+|------|------|------|------|------|
+| 600000 | 测试股 | 12.00元 | +1.2% | - |
+"""
+        )
+        rules = {item["rule"] for item in result["issues"]}
+        self.assertIn("recommendation_price_drift", rules)
+
+    def test_report_quality_gate_should_flag_missing_candidate_table(self):
+        result = self._run_quality_gate_with_content(
+            """# 股票池测试报告
+
+### 测试股（600000）
+| 项目 | 值 |
+|------|------|
+| **收盘价** | 10.00元 |
+| **综合评分** | 78分 |
+| **最终标签** | 观察 |
+| **止损位** | 9.20元 |
+| **风险等级** | 中 |
+| **更新时间** | 2026-03-10 14:30 |
+"""
+        )
+        rules = {item["rule"] for item in result["issues"]}
+        self.assertIn("missing_candidate_table", rules)
+
+    def test_report_quality_gate_should_flag_missing_recommendation_blocks(self):
+        result = self._run_quality_gate_with_content(
+            """# 测试报告
+
+## 八、10只候选股票完整数据
+| 股票代码 | 名称 | 收盘价 | 今日涨跌 | 备注 |
+|------|------|------|------|------|
+| 600000 | 测试股 | 12.00元 | +1.2% | - |
+"""
+        )
+        rules = {item["rule"] for item in result["issues"]}
+        self.assertIn("missing_recommendation_blocks", rules)
+
+    def test_report_quality_gate_should_parse_real_single_stock_markdown_output(self):
+        content = gr.format_obsidian_markdown_report(
+            {
+                "date": "2026-03-10",
+                "stocks": [
+                    {
+                        "stock_code": "600000",
+                        "stock_name": "浦发银行",
+                        "label": "观察",
+                        "price": "10.00",
+                        "scores": {"momentum": 65, "revenue": 60, "risk": 58},
+                    }
+                ],
+            }
+        )
+        result = self._run_quality_gate_with_content(content)
+        rules = {item["rule"] for item in result["issues"]}
+        self.assertNotIn("missing_recommendation_blocks", rules)
+
+    def test_report_quality_gate_should_parse_real_stock_pool_markdown_output(self):
+        content = gr.format_obsidian_markdown_report(
+            {
+                "date": "2026-03-10",
+                "analysis_mode": "agent_team",
+                "stocks": [
+                    {
+                        "stock_code": "600000",
+                        "stock_name": "浦发银行",
+                        "label": "观察",
+                        "price": "10.00",
+                        "scores": {"momentum": 65, "revenue": 60, "risk": 58},
+                    },
+                    {
+                        "stock_code": "601868",
+                        "stock_name": "中国能建",
+                        "label": "可做",
+                        "price": "2.41",
+                        "scores": {"momentum": 82, "revenue": 70, "risk": 66},
+                    },
+                ],
+            }
+        )
+        result = self._run_quality_gate_with_content(content)
+        rules = {item["rule"] for item in result["issues"]}
+        self.assertNotIn("missing_recommendation_blocks", rules)
+        self.assertNotIn("missing_candidate_table", rules)
+
+    def test_quality_check_payload_should_aggregate_rule_and_severity_summary(self):
+        payload = rqc.build_quality_check_payload(
+            [
+                {
+                    "report_path": "a.md",
+                    "passed": False,
+                    "issue_count": 2,
+                    "issues": [
+                        {"rule": "missing_timestamp_anchor", "severity": "medium", "message": "缺少时间锚点"},
+                        {"rule": "missing_candidate_table", "severity": "high", "message": "缺少候选表"},
+                    ],
+                },
+                {
+                    "report_path": "b.md",
+                    "passed": False,
+                    "issue_count": 1,
+                    "issues": [
+                        {"rule": "missing_timestamp_anchor", "severity": "medium", "message": "缺少时间锚点"},
+                    ],
+                },
+            ]
+        )
+        self.assertEqual(payload["total_reports"], 2)
+        self.assertEqual(payload["failed_reports"], 2)
+        self.assertEqual(payload["severity_summary"]["high"], 1)
+        self.assertEqual(payload["severity_summary"]["medium"], 2)
+        self.assertEqual(payload["rule_summary"]["missing_timestamp_anchor"]["count"], 2)
+        self.assertEqual(payload["rule_summary"]["missing_candidate_table"]["count"], 1)
+
+    def test_quality_check_payload_should_include_repair_suggestions(self):
+        payload = rqc.build_quality_check_payload(
+            [
+                {
+                    "report_path": "a.md",
+                    "passed": False,
+                    "issue_count": 2,
+                    "issues": [
+                        {"rule": "missing_timestamp_anchor", "severity": "medium", "message": "缺少时间锚点"},
+                        {"rule": "unconfirmed_change_with_fixed_close_price", "severity": "high", "message": "待确认涨跌"},
+                    ],
+                }
+            ]
+        )
+        categories = {item["rule"] for item in payload["repair_suggestions"]}
+        self.assertIn("missing_timestamp_anchor", categories)
+        self.assertIn("unconfirmed_change_with_fixed_close_price", categories)
+
+    def test_quality_check_markdown_should_render_rule_summary_and_report_items(self):
+        payload = rqc.build_quality_check_payload(
+            [
+                {
+                    "report_path": "C:/demo/a.md",
+                    "passed": False,
+                    "issue_count": 2,
+                    "issues": [
+                        {"rule": "missing_timestamp_anchor", "severity": "medium", "message": "缺少时间锚点"},
+                        {"rule": "missing_candidate_table", "severity": "high", "message": "缺少候选表"},
+                    ],
+                }
+            ]
+        )
+        markdown = rqc.render_repair_checklist_markdown(payload)
+        self.assertIn("规则聚合摘要", markdown)
+        self.assertIn("missing_timestamp_anchor", markdown)
+        self.assertIn("a.md", markdown)
+        self.assertIn("修复建议", markdown)
 
     def test_should_trigger_reversal_warning_when_5d_inflow_but_latest_outflow(self):
         payload = {
@@ -627,17 +897,27 @@ class TestStockSkill(unittest.TestCase):
         self.assertNotIn("多源时间戳冲突", reasons)
 
     def test_collection_quality_gate_should_downgrade_when_web_passes_but_eastmoney_fails(self):
-        search_data = self._build_multi_source_core_data(
-            ["2026-03-10 09:30", "2026-03-10 09:35", "2026-03-10 09:45"]
-        )
-        report = parse_search_results_to_report(search_data, "600000", request_date="2026-03-10")
-        gate = report.get("collection_quality_gate", {})
+        report = {
+            "audit_gate": {"passed": True, "downgrade_reasons": []},
+            "data_quality_summary": {"is_usable": False, "missing_required_fields": ["price"]},
+            "field_conflict_summary": {"has_conflict": False},
+        }
+        gate = gr._run_collection_quality_gate(report)
         self.assertFalse(gate.get("passed"))
         self.assertTrue(gate.get("web_passed"))
         self.assertFalse(gate.get("eastmoney_passed"))
-        self.assertEqual(report.get("confidence_level"), "低")
-        self.assertEqual(report.get("audit_gate", {}).get("next_action"), "downgrade_continue")
-        self.assertEqual(report.get("shortline_signals", {}).get("collection_gate_downgraded"), "true")
+        self.assertEqual(gate.get("eastmoney_status"), "failed")
+
+    def test_collection_quality_gate_should_allow_web_primary_when_eastmoney_missing(self):
+        report = {
+            "audit_gate": {"passed": True, "downgrade_reasons": []},
+        }
+        gate = gr._run_collection_quality_gate(report)
+        self.assertTrue(gate.get("passed"))
+        self.assertTrue(gate.get("web_passed"))
+        self.assertFalse(gate.get("eastmoney_passed"))
+        self.assertEqual(gate.get("eastmoney_status"), "missing_optional")
+        self.assertEqual(gate.get("next_action"), "continue")
 
     def test_collection_quality_gate_should_downgrade_when_web_fails_but_eastmoney_passes(self):
         report = {
@@ -1099,8 +1379,8 @@ class TestStockSkill(unittest.TestCase):
                 ]
             },
             "expert_outputs": {
-                "industry_researcher": {"agent": "expert_industry_researcher", "stock_code": "600000", "as_of_price": "10.20"},
-                "event_hunter": {"agent": "expert_event_hunter", "stock_code": "600000", "as_of_price": "10.20"},
+                "industry_researcher": {"agent": "stock-industry-researcher", "stock_code": "600000", "as_of_price": "10.20"},
+                "event_hunter": {"agent": "stock-event-hunter", "stock_code": "600000", "as_of_price": "10.20"},
             },
         }
         gate = gr._run_expert_identity_gate(report)
@@ -1146,7 +1426,7 @@ class TestStockSkill(unittest.TestCase):
             "price_info": {"price": "10.00"},
             "expert_outputs": {
                 "industry_researcher": {"agent": "wrong_agent", "stock_code": "600000", "as_of_price": "11.20"},
-                "event_hunter": {"agent": "expert_event_hunter", "stock_code": "601000", "as_of_price": "9.20"},
+                "event_hunter": {"agent": "stock-event-hunter", "stock_code": "601000", "as_of_price": "9.20"},
             },
         }
         gate = gr._run_expert_identity_gate(report)
@@ -1156,6 +1436,35 @@ class TestStockSkill(unittest.TestCase):
         self.assertIn("身份不匹配", reasons)
         self.assertIn("标的不一致", reasons)
         self.assertIn("价格偏差超阈值", reasons)
+
+    def test_new_expert_outputs_should_use_stock_prefixed_agent_names(self):
+        report = {
+            "stock_code": "600000",
+            "price_info": {"price": "10.20"},
+            "news": [
+                {
+                    "title": "行业景气回暖",
+                    "snippet": "订单增长、需求回暖",
+                    "link": "https://example.com/news",
+                    "timestamp": "2026-03-10 09:30",
+                }
+            ],
+        }
+        industry = gr._build_industry_research_output(report)
+        event = gr._build_event_hunter_output(report)
+        gate = gr._run_expert_identity_gate(
+            {
+                "stock_code": "600000",
+                "price_info": {"price": "10.20"},
+                "expert_outputs": {
+                    "industry_researcher": industry,
+                    "event_hunter": event,
+                },
+            }
+        )
+        self.assertEqual(industry.get("agent"), "stock-industry-researcher")
+        self.assertEqual(event.get("agent"), "stock-event-hunter")
+        self.assertNotIn("身份不匹配", " ".join(gate.get("failed_reasons", [])))
 
     def test_markdown_should_render_expert_identity_and_process_block_section(self):
         payload = {
@@ -1509,6 +1818,21 @@ class TestStockSkill(unittest.TestCase):
         self.assertEqual(financial.get("yoy"), "12.50")
         self.assertEqual(financial.get("qoq"), "3.20")
         self.assertTrue(re.match(r"\d{4}-\d{2}-\d{2}", financial.get("as_of", "")))
+
+    def test_financial_should_not_fallback_as_of_to_today_when_report_period_missing(self):
+        report = parse_search_results_to_report(
+            [
+                {
+                    "title": "业绩快讯",
+                    "snippet": "公司营业收入123.4亿元，同比增长12.5%，环比增长3.2%",
+                    "link": "http://example.com",
+                }
+            ],
+            "600000",
+        )
+        financial = report["financial"]
+        self.assertEqual(financial.get("as_of"), "")
+        self.assertEqual(financial.get("as_of_source"), "missing")
 
     def test_post_json_should_merge_default_and_custom_headers(self):
         captured = {}
