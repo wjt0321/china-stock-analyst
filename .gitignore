@@ -26,6 +26,8 @@ ENV/
 *.swp
 *.swo
 *~
+*.lingma
+*.qoder
 
 # OS
 .DS_Store
