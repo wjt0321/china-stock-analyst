@@ -19,7 +19,7 @@ python -m unittest tests.test_stock_skill.TestStockSkill.test_should_enable_agen
 python -m unittest tests.test_stock_skill.TestStockSkill -v
 ```
 
-测试覆盖范围：路由判定、数据审计、专家鉴别、舆情治理、东方财富 API 集成。当前回归测试：115 项全部通过。
+测试覆盖范围：路由判定、数据审计、专家鉴别、舆情治理、东方财富 API 集成。当前回归测试：**130 项全部通过**。
 
 ## 目录结构
 
@@ -31,6 +31,7 @@ china-stock-analyst/
 ├── scripts/
 │   ├── team_router.py          # 执行模式路由、东方财富意图路由
 │   ├── generate_report.py      # 报告生成、数据解析、评分计算
+│   ├── report_constants.py     # 报告常量：情感评分上下限、失败码、错误提示
 │   └── stock_utils.py          # 股票验证、时间戳处理、东方财富 API 封装
 ├── agents/                     # 预配置专家 Agent 定义
 │   ├── stock-data-auditor.md
@@ -211,6 +212,7 @@ run_expert_identifier_agent → supervisor_review → render_report
 | `SKILL.md` | 技能完整文档：8位专家角色、报告模块清单、预警信号规则 |
 | `scripts/team_router.py` | 模式路由：`should_use_agent_team()`, `build_skill_chain_plan()`, `route_eastmoney_intent()` |
 | `scripts/generate_report.py` | 报告生成：`plan_analysis_route()`, `parse_search_results_to_report()`, `_generate_advice()` |
+| `scripts/report_constants.py` | 报告常量：情感评分上下限、失败码与错误提示、价格有效范围 |
 | `scripts/stock_utils.py` | 股票验证、时间戳处理、东方财富 API 封装、短线指标定义 |
 | `scripts/report_quality_gate.py` | 报告质量门禁：价格一致性、时间锚点、证据链完整性校验 |
 | `scripts/run_report_quality_checks.py` | 批量报告质量检查入口脚本 |
