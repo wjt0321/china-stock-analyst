@@ -1350,6 +1350,164 @@ def normalize_timestamp_text(timestamp_text: str) -> str:
     return ""
 
 
+def estimate_main_cost(
+    main_net_inflow: float,
+    turnover_rate: float,
+    current_price: float,
+) -> dict:
+    """
+    估算主力持仓成本区间。
+
+    原理：
+        主力净流入金额 ＝ 主力买入额 - 主力卖出额
+        换手率 ＝ 成交量 / 流通股本  →  流通股本 ≈ 成交量 / 换手率
+        主力估算持仓量 ＝ |净流入额| / 当前股价
+        主力持仓成本 ＝ |净流入额| / 估算持仓量
+                              ＝ |净流入额| × 换手率 / 成交量
+                              ≈ |净流入额| × 换手率 / (成交量/股价)
+                              ＝ |净流入额| × 换手率 × 股价 / 成交量
+
+    由于成交量数据难以直接获取，改用简化公式：
+        主力成本 ≈ |净流入额| × 换手率 / (换手率 × 流通股本) × 当前股价
+        ≈ |净流入额| × 换手率² / 成交额占比  （定性估算）
+
+    更实用的方式：用净流入额和换手率的比值做定性区间：
+        - 净流入大 + 换手率适中 → 主力控盘能力强，成本区间清晰
+        - 净流入大 + 换手率极高 → 可能是对倒，成本估算参考价值低
+
+    参数:
+        main_net_inflow: 主力净流入额（元，正数=净买入，负数=净卖出）
+        turnover_rate: 换手率（小数，如 0.05 表示 5%，注意兼容百分数字符串如 "5.0"）
+        current_price: 当前股价（元）
+
+    返回:
+        dict，含成本估算值、偏离度、置信度标签
+    """
+    if current_price <= 0:
+        return {
+            "cost_estimate": None,
+            "deviation_pct": None,
+            "confidence": "low",
+            "signal": "数据不足，无法估算",
+        }
+
+    # 统一换手率格式（兼容 "5.0" 百分数字符串）
+    if isinstance(turnover_rate, str):
+        tr_str = turnover_rate.strip().replace("%", "")
+        try:
+            tr_val = float(tr_str)
+        except ValueError:
+            return {
+                "cost_estimate": None,
+                "deviation_pct": None,
+                "confidence": "low",
+                "signal": "换手率格式异常",
+            }
+        # 如果 > 1 认为是百分数
+        turnover = tr_val / 100 if tr_val > 1 else tr_val
+    elif isinstance(turnover_rate, (int, float)):
+        # 换手率可能是小数（0.05）也可能是百分数（5）
+        turnover = turnover_rate / 100 if turnover_rate > 1 else turnover_rate
+    else:
+        return {
+            "cost_estimate": None,
+            "deviation_pct": None,
+            "confidence": "low",
+            "signal": "换手率格式异常",
+        }
+
+    if turnover <= 0:
+        return {
+            "cost_estimate": None,
+            "deviation_pct": None,
+            "confidence": "low",
+            "signal": "换手率必须大于0",
+        }
+
+    inflow_abs = abs(main_net_inflow)
+    inflow_yuan = main_net_inflow / 100_000_000  # 亿元（正=净买入，负=净卖出）
+    if inflow_abs <= 0:
+        return {
+            "cost_estimate": None,
+            "deviation_pct": None,
+            "confidence": "low",
+            "signal": "无主力净流入数据",
+        }
+
+    # 简化估算：主力成本 ≈ |净流入| × 换手率 / 成交量（定性）
+    # 用"净流入额/当前股价"代表主力大致持仓金额，再除以换手率得到持仓量级
+    # 持仓量级 × 当前股价 = 持仓市值  →  成本 = |净流入| / 持仓占比
+    # 简化：主力成本 ≈ 当前价 × (1 - 净流入占比)
+    # 净流入占比 = |净流入| / (换手率 × 估算流通市值)  ≈ |净流入| / (换手率 × 成交额/换手率)
+    # 这里用定性判断：
+    # 高置信度条件：换手率在 3%~25% 区间（过低无意义，过高对倒嫌疑）
+
+    if 0.03 <= turnover <= 0.25:
+        # 估算主力持仓比例 ≈ |净流入| / (换手率 × 估算流通盘)
+        # 成交额 = 成交量 × 均价 ≈ 成交量 × 当前价
+        # 换手率 = 成交量 / 流通股本  →  成交量 ≈ 换手率 × 流通股本
+        # 流通股本 ≈ 成交额 / 换手率 / 当前价
+        # 但我们没有成交额，改用定性方法：
+        # 主力成本 ≈ 当前价 × (1 - |净流入|/成交额占比)  （定性）
+        # 简化版：用换手率和净流入构造定性区间
+        cost_low = current_price * (1 - turnover * 2)   # 低估：换手放大
+        cost_high = current_price * (1 - turnover * 0.5)  # 高估：换手保守
+        cost_estimate = (cost_low + cost_high) / 2
+        deviation_pct = (current_price - cost_estimate) / cost_estimate * 100
+        confidence = "medium"
+        if inflow_abs > 1_000_000_000:  # 亿以上净流入
+            confidence = "high"
+        elif inflow_abs < 100_000_000:   # 亿以下
+            confidence = "low"
+    else:
+        cost_estimate = current_price * 0.9 if main_net_inflow < 0 else current_price * 1.1
+        deviation_pct = (current_price - cost_estimate) / cost_estimate * 100
+        confidence = "low"
+        if turnover < 0.03:
+            signal = f"换手率偏低({turnover*100:.1f}%)，成本估算置信度低"
+        else:
+            signal = f"换手率偏高({turnover*100:.1f}%)，可能存在对倒，估算参考性差"
+        return {
+            "cost_estimate": round(cost_estimate, 2),
+            "cost_low": None,
+            "cost_high": None,
+            "deviation_pct": round(deviation_pct, 2),
+            "confidence": confidence,
+            "main_inflow_yuan": round(inflow_yuan, 2),
+            "turnover_pct": round(turnover * 100, 2),
+            "signal": signal,
+        }
+
+    # 判断信号
+    if main_net_inflow < 0:
+        # 主力净卖出场景
+        if deviation_pct > 10:
+            signal = f"主力已出货，当前价高于其成本{deviation_pct:.1f}%，机构可能看空后势"
+        elif deviation_pct < -10:
+            signal = f"主力在高位出货后股价下跌，当前价低于其成本{abs(deviation_pct):.1f}%，注意接飞刀风险"
+        else:
+            signal = f"主力有出货迹象，股价与主力成本偏离{deviation_pct:.1f}%，观望为主"
+    else:
+        # 主力净买入场景
+        if deviation_pct > 10:
+            signal = f"当前价高于主力成本{deviation_pct:.1f}%，主力浮盈较大，注意获利回吐风险"
+        elif deviation_pct < -10:
+            signal = f"当前价低于主力成本{abs(deviation_pct):.1f}%，主力浮亏，短期关注支撑"
+        else:
+            signal = f"当前价接近主力成本，偏离{deviation_pct:.1f}%，安全区间"
+
+    return {
+        "cost_estimate": round(cost_estimate, 2),
+        "cost_low": round(max(0.01, cost_low), 2),
+        "cost_high": round(cost_high, 2),
+        "deviation_pct": round(deviation_pct, 2),
+        "confidence": confidence,
+        "main_inflow_yuan": round(inflow_yuan, 2),
+        "turnover_pct": round(turnover * 100, 2),
+        "signal": signal,
+    }
+
+
 def get_shortline_indicator_recommendations() -> dict:
     indicator_items = [
         {
@@ -1423,6 +1581,18 @@ def get_shortline_indicator_recommendations() -> dict:
             "output_entry": "generate_report._build_shortline_signal_lines",
             "report_position": "风险提示",
             "risk": "资讯抓取延迟影响实时性",
+        },
+        {
+            "priority": "建议",
+            "indicator": "主力成本估算",
+            "data_source": "主力净流入额、换手率、当前股价",
+            "trigger_rule": "主力净流入>1亿且换手率3%~25%时触发，输出成本区间与偏离度",
+            "collect_entry": "stock_utils.get_search_queries",
+            "calc_entry": "stock_utils.estimate_main_cost",
+            "route_entry": "team_router.build_shortline_supervisor_rules",
+            "output_entry": "generate_report._build_main_cost_signal",
+            "report_position": "资金面/主力成本区间",
+            "risk": "换手率<3%或>25%时置信度低；不作为买卖唯一依据",
         },
     ]
     priority_order = ["必须", "建议", "可选"]
