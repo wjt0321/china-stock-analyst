@@ -25,7 +25,7 @@ python -m unittest tests.test_stock_skill.TestStockSkill -v
 
 ```
 china-stock-analyst/
-├── SKILL.md                    # 技能完整文档（v2.4.2）
+├── SKILL.md                    # 技能完整文档（v2.4.3）
 ├── README.md                   # 技能入口定义
 ├── .env.example                # 东方财富 API 配置模板
 ├── scripts/
