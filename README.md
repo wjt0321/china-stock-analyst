@@ -6,10 +6,11 @@
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-purple.svg)
 ![Tests](https://img.shields.io/badge/Tests-130%20Passed-success.svg)
+![Version](https://img.shields.io/badge/Version-3.1.0-orange.svg)
 
-**📈 A股短线交易分析助手 | Team-First 并行专家系统**
+**📈 A股短线交易分析助手 | Team-First 并行专家系统 | 插件化架构**
 
-[核心特性](#-核心特性) • [快速开始](#-快速开始) • [执行流程](#-执行流程) • [报告能力](#-报告能力) • [更新日志](#-更新日志)
+[核心特性](#-核心特性) • [快速开始](#-快速开始) • [功能模块](#-功能模块) • [更新日志](#-更新日志)
 
 </div>
 
@@ -19,7 +20,7 @@
 
 > 一个专为 **Claude Code** 设计的 A 股分析技能，采用「**短线交易信号 + 营收质量**」双轨研判体系。
 
-当前版本已升级为 **Team-First** 架构：默认并行专家协作、前置数据真实性审计、强化复杂指令自动激活与不中断执行；并完成 **Web Search 主路径 + 东方财富结构化复核** 双路径协同。
+当前版本已升级为 **v3.1.0**，具备完整的插件化架构、AKShare 数据源接入、回测框架、策略参数优化与归因分析能力。
 
 ### 与 Claude Code Skills 的适配度
 
@@ -28,7 +29,7 @@
 - **运行形态合适**：`SKILL.md + Python 辅助脚本 + 回归测试` 的结构，符合 Claude Code Skills 的仓库形态
 - **迁移成本低**：核心脚本仅依赖 Python 标准库，路径以相对路径和 `Path(__file__)` 为主
 - **质量约束完整**：具备数据真实性审计、采集质量门禁、身份校验、报告后置质量检查
-- **当前注意事项**：项目不是独立服务，而是 Skill 主文档配合脚本工具；推荐在仓库根目录内运行脚本与测试
+- **插件化扩展**：支持自定义专家插件，动态发现与加载
 
 ---
 
@@ -39,15 +40,13 @@
 | 👥 **8位专家协同** | 基本面大师 / 技术分析派 / 量化模型师 / 风险控制官 / 宏观策略师 / 行业研究家 / 消息面猎手 / 专家鉴别Agent |
 | 🧭 **Team-First 默认并行** | 默认进入 `agent_team`，复杂任务强制 `full_parallel`，不再以 `single_flow` 作为主流程 |
 | 🛡️ **数据真实性审计前置** | `run_data_auditor` 在所有分析前执行，校验日期回退、时间戳冲突、来源类别充分性 |
-| 🧾 **身份与价格双校验** | `run_expert_identifier_agent` 校验专家身份、标的一致性、价格锚点偏差，异常时流程阻断 |
-| 🧹 **舆情降噪治理** | 舆情去重、质量评分、低质量剔除，且对综合评分影响封顶，避免噪声主导推荐 |
-| ⚖️ **主管冲突仲裁** | 对行业信号与事件冲击冲突进行降档仲裁，输出“可做 / 观察 / 回避”上限与原因 |
-| 🔍 **证据链可追溯** | 每条关键结论附结论值、来源 URL、分钟级时间戳与采纳/剔除依据 |
-| 🔁 **复杂指令连续性守护** | 并行节点支持隔离重试与汇总，不因局部问题回退为单线流程 |
-| 🧠 **双路径数据接入** | 先用 Web Search 获取高覆盖候选，再用东方财富结构化接口复核关键字段，平衡额度与准确性 |
-| 🛰️ **东方财富免费 API 接入** | 新增 `news-search / query / stock-screen` 三类外部能力，补强资讯、结构化金融数据与选股结果可信度 |
-| 🔐 **安全密钥加载** | 支持 `EASTMONEY_APIKEY` / `EASTMONEY_API_KEY` / `EM_API_KEY`（推荐 `EASTMONEY_APIKEY`），回退读取 `.env.local/.env` |
-| 💸 **免费额度治理** | 内置 50 次/日配额控制、关键性门控、缓存去重与空结果引导，优先把额度用在关键数据查询 |
+| 🔌 **插件化架构** | 支持 `ExpertPlugin` / `FilterPlugin` / `TransformPlugin` 三类插件，动态发现与加载 |
+| 📊 **AKShare 数据源** | 接入 AKShare 免费数据源，支持历史K线、资金流向、新闻资讯等 |
+| 🔄 **回测框架** | 内置回测引擎，支持信号生成、绩效指标计算、Markdown 报告输出 |
+| 🎯 **策略参数优化** | Grid Search 自动寻优，支持评分权重、止损止盈参数优化 |
+| 📈 **归因分析** | 分析策略盈亏因素，计算市场/交易/风险/胜率因子贡献度 |
+| 🧾 **身份与价格双校验** | `run_expert_identifier_agent` 校验专家身份、标的一致性、价格锚点偏差 |
+| 🔐 **安全密钥加载** | 支持 `EASTMONEY_APIKEY` 环境变量，回退读取 `.env.local/.env` |
 
 ---
 
@@ -57,6 +56,8 @@
 
 ```bash
 git clone https://github.com/wjt0321/china-stock-analyst.git
+cd china-stock-analyst
+pip install -r requirements.txt
 ```
 
 将项目复制到 Claude Code 技能目录：
@@ -69,73 +70,70 @@ git clone https://github.com/wjt0321/china-stock-analyst.git
 ### 验证安装
 
 ```bash
-python -m unittest tests/test_stock_skill.py -v
+python -m pytest tests/test_stock_skill.py -v
 ```
 
 当前测试结果：**130 个用例全部通过** ✅
 
-### 东方财富 API 配置（可选增强）
+### 配置（可选）
 
-1. 到东方财富 Skills 页面申请你自己的 API Key（请勿使用他人密钥）。
-2. 在项目根目录创建 `.env.local`（推荐）或 `.env`：
+**东方财富 API**（结构化数据增强）：
 
 ```env
-EASTMONEY_APIKEY=请填入你自己的apikey
-EASTMONEY_BASE_URL=https://mkapi2.dfcfs.com/finskillshub/api/claw
-EASTMONEY_ENDPOINT_NEWS_SEARCH=/news-search
-EASTMONEY_ENDPOINT_QUERY=/query
-EASTMONEY_ENDPOINT_STOCK_SCREEN=/stock-screen
+# .env.local
+EASTMONEY_APIKEY=你的API密钥
 ```
 
-3. 也可直接使用系统环境变量，支持 `EASTMONEY_APIKEY` / `EASTMONEY_API_KEY` / `EM_API_KEY`（推荐 `EASTMONEY_APIKEY`），优先级高于 `.env.local/.env`。
-4. 仓库已提供 `.env.example` 模板，且 `.gitignore` 默认忽略 `.env` 与 `.env.local`，避免密钥泄露。
+**AKShare**（免费数据源，无需配置）：
 
-说明：
-
-- **无 API Key 仍可运行主流程**
-- 当前主路径是 **Web Search**
-- 东方财富用于结构化补充、关键字段复核与选股增强
+```bash
+pip install akshare
+```
 
 ---
 
-## 🔌 数据接入说明（v2.4.3）
+## 📦 功能模块
 
-### 接入目标
+### 1. 数据采集
 
-- 在高额度前提下保障候选覆盖与分析连续性
-- 用结构化复核降低通用检索噪声与自由补全错配
-- 建立“先候选再复核”的硬门禁链路
+| 模块 | 说明 |
+|:---|:---|
+| Web Search | 主数据源，高覆盖候选 |
+| 东方财富 API | 结构化复核，关键字段校验 |
+| AKShare | 免费数据源，历史K线/资金流向/新闻 |
 
-### 接入策略
+### 2. 分析引擎
 
-- **主来源切换**：关键字段先由 Web Search 提供候选快照，再由东财 `query` 复核
-- **来源优先级**：`web_search > eastmoney_query`
-- **职责拆分**：Web Search 负责覆盖与候选，东财负责结构化关键字段校验
-- **回退策略**：东财不可用时标记“未完成结构化复核”，不得伪造校验通过结论
+| 模块 | 文件 | 说明 |
+|:---|:---|:---|
+| 团队路由 | `scripts/team_router.py` | Team-First 并行调度 |
+| 报告生成 | `scripts/generate_report.py` | Markdown 报告输出 |
+| 技术指标 | `scripts/technical_indicators.py` | ATR/VWAP/RSI/支撑压力位 |
+| 技术报告 | `scripts/technical_report.py` | 技术分析报告生成 |
 
-### 关键实现点
+### 3. 回测系统
 
-- `scripts/stock_utils.py`
-  - 新增 Web Search + 东财双路径字段对齐与质量评分
-  - 新增标准化输出字段（`symbol/name/price/trade_date`）
-  - 新增统一错误码（空结果、参数错误、接口异常）
-- `scripts/generate_report.py`
-  - 新增代码↔名称一致性、价格有效性、交易日时效性门禁
-  - 任一失败即阻断后续结论生成，并返回结构化修复建议
-- `scripts/team_router.py`
-  - 透传标的元信息（来源函数、抓取时间、校验结论、失败原因码）
-  - 统一失败原因码与用户可读提示
-- `scripts/report_quality_gate.py`
-  - 扩展止损位、标签-分数一致性、风险-建议冲突校验
-  - 补强模板变体、候选表缺失、推荐段缺失等防漏检规则
-- `scripts/run_report_quality_checks.py`
-  - 输出规则聚合摘要、严重级别统计与修复建议
-  - 可生成历史报告修复清单所需的结构化结果
+| 模块 | 文件 | 说明 |
+|:---|:---|:---|
+| 回测框架 | `scripts/backtest_framework.py` | 信号回测引擎 |
+| AKShare 集成 | `scripts/backtest_runner.py` | 数据源打通 |
+| 策略优化 | `scripts/strategy_optimizer.py` | Grid Search 参数优化 |
+| 归因分析 | `scripts/strategy_optimizer.py` | 盈亏因子分析 |
 
-### 报告侧变化
+### 4. 插件系统
 
-- 新增/增强“数据真实性鉴别结果”与“数据源元信息”展示
-- 展示来源函数、抓取时间、校验结论、失败原因码、修复建议
+| 模块 | 文件 | 说明 |
+|:---|:---|:---|
+| 插件基类 | `scripts/plugin_base.py` | ExpertPlugin/FilterPlugin/TransformPlugin |
+| 插件加载器 | `scripts/plugin_loader.py` | 动态发现与加载 |
+| 示例插件 | `plugins/expert/` | 技术指标/资金流向插件 |
+
+### 5. 配置系统
+
+| 文件 | 说明 |
+|:---|:---|
+| `config/settings.json` | 外置配置（评分权重/质量门禁/回测参数） |
+| `scripts/config_loader.py` | 配置加载器 |
 
 ---
 
@@ -148,36 +146,60 @@ EASTMONEY_ENDPOINT_STOCK_SCREEN=/stock-screen
 看看珠江股份 600684 怎么样
 ```
 
-### 🔍 多标的对比/讨论
+### 🔍 多标的对比
 
 ```text
 请对比中国能建和首开股份，给我短线建议
 分析一下电力板块：晋控电力、长源电力
 ```
 
-### ⚡ 高意图复杂请求（自动 full_parallel）
+### ⚡ 高意图复杂请求
 
 ```text
 请今日采集市场数据，先筛选10支，再组织专家讨论，最后推荐3支
 ```
 
-### ✅ 验证历史报告
+### 🔄 回测分析
 
-```text
-验证股票研究报告/泰豪科技600590分析报告-20260307.md
-对比一下 中钢国际000928 3月7日的报告和今天的数据
+```python
+from scripts.backtest_runner import quick_backtest
+
+result = quick_backtest("600519")
+print(f"总收益: {result.metrics.total_return:.2%}")
+print(f"夏普比率: {result.metrics.sharpe_ratio:.2f}")
+```
+
+### 🎯 策略优化
+
+```python
+from scripts.strategy_optimizer import StrategyOptimizer
+
+optimizer = StrategyOptimizer()
+result = optimizer.optimize_scoring_weights("600519", objective="sharpe_ratio")
+print(optimizer.get_optimization_report(result))
+```
+
+### 🔌 插件扩展
+
+```python
+from scripts.plugin_base import ExpertPlugin, PluginContext, PluginResult
+
+class MyExpertPlugin(ExpertPlugin):
+    name = "my_expert"
+    version = "1.0.0"
+    category = "custom"
+    
+    def can_handle(self, context: PluginContext) -> bool:
+        return "自定义" in context.request
+    
+    def execute(self, context: PluginContext) -> PluginResult:
+        # 你的分析逻辑
+        return PluginResult(success=True, content="分析结果")
 ```
 
 ---
 
 ## 🎭 执行流程
-
-### 路由模式
-
-| 模式 | 触发特征 | 说明 |
-|:---|:---|:---|
-| `full_parallel` | 多标的/验证/冲突仲裁/高意图串联任务 | 全专家并行 + 连续性守护 |
-| `lite_parallel` | 轻量请求 | 同流程范式降级，减少部分专家节点 |
 
 ### 固定链路
 
@@ -198,7 +220,7 @@ run_data_auditor
 
 ---
 
-## 📊 评分与治理
+## 📊 评分体系
 
 ### 双轨评分
 
@@ -210,67 +232,44 @@ run_data_auditor
 
 最终标签：`可做` / `观察` / `回避`
 
-### 舆情治理规则
-
-- 舆情先去重再评分，低质量信息不进入核心结论
-- 舆情影响分设置上下限，不允许主导综合评分
-- 报告展示采纳依据与剔除依据，支持复核
-
----
-
-## 📋 报告能力
-
-生成报告包含以下关键模块：
-
-| 模块 | 内容 |
-|:---|:---|
-| ⏰ 时效性与口径警告 | 数据截至时间、信号有效期、营收口径说明 |
-| 🛡️ 数据真实性审计 | 日期/时间戳/多源一致性审计结论与降级策略 |
-| 💰 营收快照 | 营收/同比/环比/口径/来源/日期 |
-| 🎯 双轨评分 | 加权总分与校准后总分 |
-| 🧹 舆情降噪治理 | 采纳数、剔除数、理由与影响分 |
-| 🧠 专家独立结论 | 8位专家观点与证据链 |
-| 🧾 专家鉴别与流程阻断 | 身份/标的/价格校验结果、阻断阶段、后续动作 |
-| ⚖️ 主管仲裁 | 冲突项、标签上限、仲裁原因 |
-| 🔗 证据链总表 | 结论→数据→来源→时间戳 |
-
 ---
 
 ## 📁 项目结构
 
 ```text
 china-stock-analyst/
-├── SKILL.md
-├── README.md
-├── LICENSE
-├── README_EN.md
+├── SKILL.md                    # Claude Code 技能主入口
+├── README.md                   # 项目说明
+├── CLAUDE.md                   # 开发者指南
+├── requirements.txt            # Python 依赖
+├── config/
+│   └── settings.json           # 外置配置
 ├── scripts/
-│   ├── team_router.py
-│   ├── generate_report.py
-│   ├── stock_utils.py
-│   ├── report_constants.py
-│   ├── report_quality_gate.py
-│   └── run_report_quality_checks.py
-├── agents/
-│   ├── stock-data-auditor.md
-│   ├── stock-fundamental-expert.md
-│   ├── stock-technical-expert.md
-│   ├── stock-quant-flow-expert.md
-│   ├── stock-risk-expert.md
-│   ├── stock-macro-expert.md
-│   ├── stock-industry-researcher.md
-│   ├── stock-event-hunter.md
-│   └── stock-identity-auditor.md
+│   ├── team_router.py          # 团队路由
+│   ├── generate_report.py      # 报告生成
+│   ├── stock_utils.py          # 工具函数
+│   ├── technical_indicators.py # 技术指标计算
+│   ├── technical_report.py     # 技术分析报告
+│   ├── backtest_framework.py   # 回测框架
+│   ├── backtest_runner.py      # 回测运行器
+│   ├── akshare_adapter.py      # AKShare 适配器
+│   ├── strategy_optimizer.py   # 策略优化器
+│   ├── plugin_base.py          # 插件基类
+│   ├── plugin_loader.py        # 插件加载器
+│   └── config_loader.py        # 配置加载器
+├── plugins/
+│   ├── __init__.py
+│   └── expert/
+│       ├── technical_indicators_plugin.py
+│       └── fund_flow_plugin.py
+├── agents/                     # 专家定义
 ├── tests/
-│   └── test_stock_skill.py
-├── assets/
-│   └── 报告模板.md
-├── references/
-│   └── 估值模型说明.md
-└── docs/
-    ├── agent-teams-blueprint.md
-    ├── REPORT_QUALITY_REPAIR_CHECKLIST_20260403.md
-    └── plans/
+│   ├── test_stock_skill.py     # 主测试
+│   └── test_integration.py     # 集成测试
+├── docs/
+│   └── WINDOWS_SETUP.md        # Windows 配置指南
+└── assets/
+    └── 报告模板.md
 ```
 
 ---
@@ -278,25 +277,24 @@ china-stock-analyst/
 ## 🧪 运行测试
 
 ```bash
-python -m unittest tests/test_stock_skill.py -v
+# 运行所有测试
+python -m pytest tests/ -v
+
+# 运行主测试
+python -m pytest tests/test_stock_skill.py -v
+
+# 运行集成测试
+python -m pytest tests/test_integration.py -v
 ```
 
-测试覆盖包含：
+测试覆盖：
 - 路由与高意图激活
 - 数据审计与重采降级
-- 专家鉴别、身份与价格校验、流程阻断
-- 舆情降噪与评分封顶
-- 新增专家与主管仲裁
-- 报告质量门禁、批量质量检查、修复建议聚合
-- 复杂请求端到端闭环验证
-- 当前回归测试总量：**130 项（全部通过）**
-
-常用质量检查命令：
-
-```bash
-python scripts/report_quality_gate.py stock-reports\\000767_晋控电力_20260310.md
-python scripts/run_report_quality_checks.py
-```
+- 专家鉴别、身份与价格校验
+- 回测框架与绩效指标
+- 插件系统加载与执行
+- 策略优化与归因分析
+- **当前回归测试总量：130 项（全部通过）**
 
 ---
 
@@ -308,144 +306,67 @@ python scripts/run_report_quality_checks.py
 
 ## 📅 更新日志
 
+### v3.1.0 (2026-05-01)
+
+- **策略参数优化器**：
+  - Grid Search 自动寻优
+  - 支持评分权重、止损止盈参数优化
+  - 多目标函数（收益率/夏普比率/胜率/风险调整收益）
+- **回测归因分析**：
+  - 分析市场/交易/风险/胜率因子贡献度
+  - 生成归因分析 Markdown 报告
+- 测试回归通过：**130 项全部通过**
+
+### v3.0.0 (2026-05-01)
+
+- **插件化架构**：
+  - 新增 `ExpertPlugin` / `FilterPlugin` / `TransformPlugin` 抽象基类
+  - 动态发现与加载插件
+  - 示例插件：技术指标分析、资金流向分析
+- **team_router 集成**：
+  - 新增 `get_available_plugins()` / `execute_plugin()` API
+  - 延迟加载，可选依赖
+- 测试回归通过：**130 项全部通过**
+
+### v2.6.0 (2026-05-01)
+
+- **配置模块集成**：
+  - 硬编码常量迁移到 `config/settings.json`
+  - 新增 `config_loader.py` 动态加载
+- **回测框架与 AKShare 打通**：
+  - 新增 `backtest_runner.py` 集成数据源
+  - 支持自动信号生成
+- **技术指标与报告联动**：
+  - 新增 `technical_report.py` 生成技术分析报告
+  - 支持 ATR/VWAP/RSI/支撑压力位/量比/动量分析
+- **性能优化**：
+  - 20+ 正则表达式预编译
+- 测试回归通过：**145 项全部通过**
+
+### v2.5.0 (2026-05-01)
+
+- **AKShare 数据源接入**：
+  - 新增 `akshare_adapter.py` 数据适配器
+  - 支持历史K线、资金流向、新闻资讯
+- **跨平台路径支持**：
+  - 新增 `platform_paths.py` 统一路径管理
+- **Windows 环境文档**：
+  - 新增 `docs/WINDOWS_SETUP.md`
+- **技术指标计算器**：
+  - 新增 `technical_indicators.py`
+  - ATR/VWAP/RSI/支撑压力位计算
+- **回测框架**：
+  - 新增 `backtest_framework.py`
+  - 支持信号回测、绩效指标、Markdown 报告
+- 测试回归通过：**145 项全部通过**
+
 ### v2.4.3 (2026-04-03)
 
 - 发布 Release/Tag：`2.4.3`
-- **README 与 SKILL 文档收敛**：
-  - 重写 `SKILL.md`，收敛为适合 Claude Code Skills 的主规则文件
-  - README/README_EN 同步更新为当前真实运行形态与数据源策略
-- **报告质量门禁增强**：
-  - 新增止损位、标签-分数一致性、风险-建议冲突校验
-  - 补强候选表标题变体、候选表缺失、推荐段缺失等防漏检规则
-- **批量质量检查增强**：
-  - `run_report_quality_checks.py` 新增规则聚合摘要、严重级别统计与修复建议输出
-  - 基于现有 `stock-reports` 生成修复清单文档，便于人工逐项修正
+- **README 与 SKILL 文档收敛**
+- **报告质量门禁增强**
+- **批量质量检查增强**
 - 测试回归通过：**130 项全部通过**
-
-### v2.4.2 (2026-03-17)
-
-- 发布 Release/Tag：`2.4.2`
-- **新增数据前置门禁，提升数据准确性**：
-  - 在结论生成前，强制执行“代码↔名称一致性、价格有效性、交易日时效性”三重门禁
-  - 任一门禁失败即阻断后续分析，不输出带误导风险的推荐结论
-  - 阻断时返回结构化修复建议（失败原因码 + 可执行修复动作），支持快速重采与复核
-- **门禁执行位置前移**：
-  - 固定在 `run_data_auditor` 之后、专家结论汇总之前执行，确保后续链路建立在已校验数据上
-- **报告可追溯性增强**：
-  - 在“数据真实性鉴别结果/数据源元信息”中补充门禁结论、失败原因码与修复建议展示
-- 测试回归通过：**95 项全部通过**
-
-### v2.4.1 (2026-03-17)
-
-- 发布 Release/Tag：`2.4.1`
-- **AKShare 删库级清理完成**：
-  - 完全移除 AKShare 代码路径、依赖与诊断脚本，避免链路不稳定影响主流程
-  - 路由与报告元信息改为通用标的元信息（`metadata_passthrough`）
-- **AKShare 使用难点说明（本次清理的直接原因）**：
-  - 在同一网络条件下出现明显间歇性 `REMOTE_DISCONNECTED`
-  - 网络连通探测通过但业务请求不稳定，导致可重复性与可观测性不足
-  - 无法满足当前技能对连续稳定分析与结果可复核的要求
-- **数据策略重构**：
-  - 关键字段来源切换为 `web_search > eastmoney_query`
-  - 东方财富保留为结构化复核通道，配合额度治理与质量评分
-- 测试回归通过：**95 项全部通过**
-
-### v2.4.0 (2026-03-17)
-
-- 发布 Release/Tag：`2.4.0`
-- **双路径数据治理完成**：
-  - 关键字段切换为 `web_search > eastmoney_query`
-  - 新增数据质量摘要与统一错误码，减少跨来源字段漂移
-- **真实性门禁升级**：
-  - 分析前强制执行代码↔名称一致性、价格有效性、交易日时效校验
-  - 任一失败立即阻断流程，返回结构化修复建议
-- **来源治理升级**：
-  - Web 检索降级为资讯补充，不再用于关键行情字段主判定
-  - 增加来源优先级、失败原因码与用户提示映射
-- **路由与报告可追溯增强**：
-  - 报告新增来源函数、抓取时间、校验结论与失败原因码展示
-- 测试扩展至 **94 项并全部通过**
-
-### v2.3.1 (2026-03-14)
-
-- 发布 Release/Tag：`2.3.1`
-- 新增时间戳治理：
-  - 统一采用分钟级时间戳对齐与比对，减少跨源时间颗粒度不一致带来的误判
-  - 在证据链与审计结果中补充时间语义提示，提升“可追溯 + 可解释”能力
-- 收盘价语义收敛：
-  - “收盘价”仅在具备“当日/今日”语义或可验证日期锚点时视为有效当前价
-  - 对“仅出现收盘价但缺少当日语义”的文本执行歧义拒绝，避免历史价误当现价
-- 路由策略更新（lite/full）：
-  - lite/full 均统一走 Team 编排主路径，确保流程一致性
-  - 仅通过执行强度（`execution_profile`）区分并发与推理深度，不再分叉核心链路
-- 标的绑定强化：
-  - 启用“名称-代码强邻接”约束，要求局部窗口内形成稳定绑定关系
-  - 同一代码邻接多个名称或同一名称邻接多个代码时，触发歧义拒绝并阻断错误绑定
-- ST 语义保留：
-  - 名称标准化过程中默认保留 ST 前缀，不做去标处理
-  - 兼容 ST/非 ST 别名映射，避免风控语义在归一化阶段丢失
-- 测试扩展至 **79 项并全部通过**，新增覆盖收盘价当日语义判定、lite/full 团队路由一致性、强邻接歧义拒绝与 ST 前缀保留
-
-### v2.3.0 (2026-03-13)
-
-- 发布 Release/Tag：`2.3.0`
-- 新增东方财富免费 API 三类能力接入：
-  - `news-search`：金融资讯检索（新闻、公告、研报、事件解读）
-  - `query`：结构化金融数据查询（行情、财务、关系经营等）
-  - `stock-screen`：自然语言智能选股与结果导出
-- 新增数据正确性保障机制：
-  - Team-First 流程中加入关键性门控，非关键请求不消耗外部 API
-  - 配额治理：默认 50 次/日计数与上限拦截
-  - 缓存去重：重复问句优先复用结果，减少额度浪费
-  - 空结果与超范围请求统一提示，避免伪造占位数据
-- 新增安全与便携配置：
-  - 必须由用户自行申请并配置 `EASTMONEY_APIKEY`
-  - 支持系统环境变量优先，项目 `.env.local/.env` 回退
-  - 提供 `.env.example` 作为迁移模板，不提交真实密钥
-- 测试扩展至 **71 项并全部通过**，覆盖请求构造、路由触发、配额控制、脱敏输出与 `.env` 回退加载
-
-### v2.2.3 (2026-03-13)
-
-- 新增 `agents/` 预设专家目录：将 Team-First 常用角色前置为可直接复用的 Agent 定义，减少运行时拼装提示词开销
-- 路由新增“预置优先 + 默认兜底”：可命中预设 Agent 时使用 `preconfigured`，缺失时自动回退 `default`，不打断流程
-- 输出增加角色调用来源注册信息，便于审计与排障
-- `SKILL.md` 补充预设 Agent 映射、启用规则与回退策略说明
-- 测试扩展至 56 项并全部通过（含命中与回退场景）
-
-### v2.2.1 (2026-03-13)
-
-- 标的绑定增强：`parse_search_results_to_report` 支持 `stock_name` 输入并注入 `canonical_name/canonical_code`，多标的混合文本下身份校验更稳健
-- 资金方向兜底：无方向词场景改为保守判定，避免把“仅金额描述”误判为流入或流出
-- 审计回归补强：新增“阈值内不冲突”“双类别通过”等回归测试，降低误报同时保证可解释性
-- 文档完善：补充数据提取原则（价格锚点优先、多标的过滤）
-- 测试扩展：测试集扩展至 54 项并全部通过
-
-### v2.1.1 (2026-03-13)
-
-- 价格解析：优先从语义锚点（最新价/现价/收盘价等）提取股价，添加 A 股价格区间校验（0.1-600 元）
-- 资金流向：扩展方向关键词列表，防止跨角色方向污染
-- 数据源验证：放宽类别要求（3→2）和时间戳冲突阈值（90→179 分钟），扩展数据源 domain 列表
-
-### v2.1.0 (2026-03-12)
-
-- 新增 `run_expert_identifier_agent`：专家身份、标的一致性、价格锚点偏差校验
-- 新增流程阻断机制：身份或价格校验失败时阻断 `supervisor_review`
-- 报告新增“专家鉴别与身份价格校验”“流程阻断”区块
-- 测试扩展至 42 项并全部通过
-
-### v2.0.0 (2026-03-11)
-
-- 架构升级为 Team-First 默认并行执行
-- 新增数据真实性审计专家并前置门禁
-- 新增行业研究家与消息面猎手专家
-- 引入舆情降噪治理与评分影响封顶
-- 强化复杂指令自动激活与连续性守护
-- 测试扩展至 40 项并全部通过
-
-### v1.1.0 (2025-03-11)
-
-- 新增短线指标增强（VWAP偏离/ATR止损/量比）
-- 引入校准评分机制与缺失降级规则
 
 ---
 

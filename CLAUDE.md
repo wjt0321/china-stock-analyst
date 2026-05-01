@@ -4,54 +4,66 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-A股智能分析助手（china-stock-analyst）是一个 Claude Code 技能，用于 A 股短线交易分析。核心特点：「短线交易信号 + 营收质量」双轨研判体系，采用 Team-First 默认并行架构。
+A股智能分析助手（china-stock-analyst）是一个 Claude Code 技能，用于 A 股短线交易分析。核心特点：「短线交易信号 + 营收质量」双轨研判体系，采用 Team-First 默认并行架构，支持插件化扩展、回测框架、策略优化。
+
+当前版本：**v3.1.0**
 
 ## 运行测试
 
 ```bash
 # 运行全部测试
-python -m unittest tests/test_stock_skill.py -v
+python -m pytest tests/ -v
+
+# 运行主测试
+python -m pytest tests/test_stock_skill.py -v
+
+# 运行集成测试
+python -m pytest tests/test_integration.py -v
 
 # 运行单个测试方法
 python -m unittest tests.test_stock_skill.TestStockSkill.test_should_enable_agent_team_for_multi_stock_request -v
-
-# 运行单个测试类
-python -m unittest tests.test_stock_skill.TestStockSkill -v
 ```
 
-测试覆盖范围：路由判定、数据审计、专家鉴别、舆情治理、东方财富 API 集成。当前回归测试：**130 项全部通过**。
+测试覆盖范围：路由判定、数据审计、专家鉴别、舆情治理、东方财富 API 集成、回测框架、插件系统。当前回归测试：**130 项全部通过**。
 
 ## 目录结构
 
 ```
 china-stock-analyst/
-├── SKILL.md                    # 技能完整文档（v2.4.3）
-├── README.md                   # 技能入口定义
-├── .env.example                # 东方财富 API 配置模板
+├── SKILL.md                    # 技能完整文档（v3.1.0）
+├── README.md                   # 项目说明
+├── CLAUDE.md                   # 开发者指南
+├── requirements.txt            # Python 依赖
+├── config/
+│   └── settings.json           # 外置配置
 ├── scripts/
-│   ├── team_router.py          # 执行模式路由、东方财富意图路由
+│   ├── team_router.py          # 执行模式路由、插件系统
 │   ├── generate_report.py      # 报告生成、数据解析、评分计算
-│   ├── report_constants.py     # 报告常量：情感评分上下限、失败码、错误提示
-│   └── stock_utils.py          # 股票验证、时间戳处理、东方财富 API 封装
+│   ├── stock_utils.py          # 股票验证、时间戳处理、东方财富 API 封装
+│   ├── report_constants.py     # 报告常量
+│   ├── technical_indicators.py # 技术指标计算
+│   ├── technical_report.py     # 技术分析报告生成
+│   ├── backtest_framework.py   # 回测框架
+│   ├── backtest_runner.py      # 回测运行器
+│   ├── akshare_adapter.py      # AKShare 数据适配器
+│   ├── strategy_optimizer.py   # 策略参数优化器
+│   ├── plugin_base.py          # 插件抽象基类
+│   ├── plugin_loader.py        # 插件加载器
+│   ├── config_loader.py        # 配置加载器
+│   └── platform_paths.py       # 跨平台路径管理
+├── plugins/
+│   ├── __init__.py
+│   └── expert/
+│       ├── technical_indicators_plugin.py
+│       └── fund_flow_plugin.py
 ├── agents/                     # 预配置专家 Agent 定义
-│   ├── stock-data-auditor.md
-│   ├── stock-fundamental-expert.md
-│   ├── stock-technical-expert.md
-│   ├── stock-quant-flow-expert.md
-│   ├── stock-risk-expert.md
-│   ├── stock-macro-expert.md
-│   ├── stock-industry-researcher.md
-│   ├── stock-event-hunter.md
-│   └── stock-identity-auditor.md
 ├── tests/
-│   └── test_stock_skill.py     # 单元测试
-├── assets/
-│   └── 报告模板.md              # Obsidian 风格报告模板
-├── references/
-│   └── 估值模型说明.md          # 基本面分析估值方法参考
+│   ├── test_stock_skill.py     # 单元测试
+│   └── test_integration.py     # 集成测试
 ├── docs/
-│   └── agent-teams-blueprint.md # Agent Teams 编排蓝图
-└── stock-reports/              # 生成的报告输出目录
+│   └── WINDOWS_SETUP.md        # Windows 配置指南
+└── assets/
+    └── 报告模板.md              # Obsidian 风格报告模板
 ```
 
 ## 核心架构
@@ -79,13 +91,6 @@ run_industry_researcher_expert → run_event_hunter_expert →
 run_expert_identifier_agent → supervisor_review → render_report
 ```
 
-**lite_parallel 模式（9步）**：精简专家链（省略 macro、industry、event）
-```
-run_data_auditor → collect_data → run_fundamental_expert → run_technical_expert →
-run_quant_flow_expert → run_risk_expert →
-run_expert_identifier_agent → supervisor_review → render_report
-```
-
 ### 8位专家角色
 
 | 编号 | 角色 | 分析重点 | Agent 文件 |
@@ -99,71 +104,185 @@ run_expert_identifier_agent → supervisor_review → render_report
 | 07 | 消息面猎手 | 公告政策、监管信号、事件冲击 | `agents/stock-event-hunter.md` |
 | 08 | 专家鉴别Agent | 身份校验、标的一致性、价格锚点偏差 | `agents/stock-identity-auditor.md` |
 
-**预置 Agent 加载规则**：
-- 优先从 `agents/` 目录读取 `.md` 定义文件
-- 若缺失则回退为默认执行路径，不中断整体流程
-- 数据审计专家：`agents/stock-data-auditor.md`（前置门禁）
+## 新增模块
 
-### 报告生成
+### 1. 插件系统
 
-`scripts/generate_report.py` 提供：
-- `plan_analysis_route(user_request)` → 返回模式与技能步骤
-- `format_obsidian_markdown_report(payload)` → 生成 Obsidian 兼容报告
-- `parse_search_results_to_report()` → 解析搜索结果为结构化数据
-- `_generate_minimal_shortline_recommendation()` → 短线指标计算（VWAP偏离、ATR止损、量比）
-- `_build_reversal_warning()` → 资金流向反转预警
+**位置**：`scripts/plugin_base.py` + `scripts/plugin_loader.py`
 
-报告模式自动判定：
-- 单标的 → `single_stock` 模式
-- 多标的 → `stock_pool` 模式
+**三类插件基类**：
+- `ExpertPlugin`：专家插件，自定义分析逻辑
+- `FilterPlugin`：过滤器插件，数据过滤
+- `TransformPlugin`：转换器插件，数据转换
 
-## 关键特性
+**使用方式**：
+```python
+from scripts.team_router import get_available_plugins, execute_plugin
 
-### 数据真实性审计（run_data_auditor）
-- 日期回退校验
-- 时间戳冲突检测
-- 来源类别充分性检查
+# 获取可用插件
+plugins = get_available_plugins()
 
-### 专家鉴别Agent（run_expert_identifier_agent）
-- 专家身份校验
-- 标的一致性校验
-- 价格锚点偏差校验
-- 流程阻断机制：校验失败时阻断 supervisor_review
+# 执行插件
+result = execute_plugin(
+    plugin_name="technical_indicators",
+    stock_code="600519",
+    stock_name="贵州茅台",
+    request="分析技术指标"
+)
+```
 
-### 舆情降噪治理
-- 舆情去重、质量评分、低质量剔除
-- 评分影响分设置上下限，避免噪声主导推荐
+**示例插件**：
+- `plugins/expert/technical_indicators_plugin.py`
+- `plugins/expert/fund_flow_plugin.py`
 
-### 冲突仲裁规则
-- 行业景气正向 + 事件冲击强负向 → 标签上限降为「观察」
-- 行业景气负向 + 事件冲击负向 → 标签上限降为「回避」
+### 2. 回测框架
 
-## 数据解析规则
+**位置**：`scripts/backtest_framework.py` + `scripts/backtest_runner.py`
 
-### 资金流向（`_parse_fund_flow`）
-- 统一单位为「万元」
-- 净流入为正，净流出为负
-- 提取主力资金（main）和散户资金（retail）
+**快速回测**：
+```python
+from scripts.backtest_runner import quick_backtest
 
-### 营收快照（`_parse_financial`）
-- 必需字段：revenue, yoy（同比）, qoq（环比）, as_of（日期）
-- 单位：优先提取「亿元」，自动保留2位小数
+result = quick_backtest("600519")
+print(f"总收益: {result.metrics.total_return:.2%}")
+print(f"夏普比率: {result.metrics.sharpe_ratio:.2f}")
+print(f"最大回撤: {result.metrics.max_drawdown:.2%}")
+```
 
-### 证据链
-- 每条结论需包含：结论、数据点、来源URL、分钟级时间戳
+**绩效指标**：
+- 总收益率
+- 年化收益率
+- 最大回撤
+- 夏普比率
+- 胜率
+- 盈亏比
 
-## 预警信号
+### 3. 策略参数优化
 
-### 资金流向反转预警
-触发条件：近5日主力资金净流入 且 最新主力资金净流出
+**位置**：`scripts/strategy_optimizer.py`
 
-### 短线指标缺失降级
-- 缺失 VWAP偏离/ATR止损/量比 任一关键项 → 标签上限「观察」
-- `|VWAP偏离|>=4.0%` 且 `量比<1.0` → 标签上限「回避」
+**Grid Search 优化**：
+```python
+from scripts.strategy_optimizer import StrategyOptimizer
 
-### 置信度降级
-- 营收快照缺失字段 → 置信度降为「中」或「低」
-- 缺失关键指标 → 置信度上限「中」
+optimizer = StrategyOptimizer()
+
+# 优化评分权重
+result = optimizer.optimize_scoring_weights("600519", objective="sharpe_ratio")
+
+# 优化止损止盈
+result = optimizer.optimize_stop_loss_take_profit("600519")
+
+# 获取优化报告
+print(optimizer.get_optimization_report(result))
+```
+
+**优化目标**：
+- `total_return`：总收益率
+- `sharpe_ratio`：夏普比率
+- `win_rate`：胜率
+- `risk_adjusted`：风险调整收益
+
+### 4. 归因分析
+
+**位置**：`scripts/strategy_optimizer.py`
+
+**使用方式**：
+```python
+from scripts.strategy_optimizer import BacktestAttributor
+
+attributor = BacktestAttributor()
+attribution = attributor.analyze(backtest_result, candles, fund_flow)
+print(attributor.get_attribution_report(attribution))
+```
+
+**归因因子**：
+- 市场因子：基准收益贡献
+- 交易因子：主动交易贡献
+- 风险因子：回撤影响
+- 胜率因子：胜率贡献
+
+### 5. 技术指标计算
+
+**位置**：`scripts/technical_indicators.py`
+
+**支持的指标**：
+- ATR（平均真实波幅）
+- VWAP（成交量加权均价）
+- RSI（相对强弱指标）
+- 支撑/压力位
+- 量比
+- 动量
+
+**使用方式**：
+```python
+from scripts.technical_indicators import calc_full_indicators
+
+indicators = calc_full_indicators(candles)
+print(f"ATR: {indicators['atr'].atr}")
+print(f"VWAP: {indicators['vwap'].vwap}")
+print(f"RSI: {indicators['rsi']}")
+```
+
+### 6. AKShare 数据适配器
+
+**位置**：`scripts/akshare_adapter.py`
+
+**支持的数据**：
+- 历史K线数据（日线/分钟线）
+- 资金流向数据（主力/散户分离）
+- 实时买卖盘（Level2）
+- 个股新闻资讯
+- 涨停板数据
+
+**使用方式**：
+```python
+from scripts.akshare_adapter import AKShareAdapter
+
+adapter = AKShareAdapter()
+data = adapter.get_full_data("600519")
+print(f"K线数据: {len(data.candles)} 条")
+print(f"资金流向: {len(data.fund_flow)} 条")
+```
+
+### 7. 配置系统
+
+**位置**：`config/settings.json` + `scripts/config_loader.py`
+
+**主要配置项**：
+- `scoring`：评分权重配置
+- `quality_gate`：质量门禁阈值
+- `backtest`：回测参数
+- `technical_indicators`：技术指标参数
+- `akshare`：AKShare 配置
+
+**使用方式**：
+```python
+from scripts.config_loader import get_scoring_weights, get_backtest_config
+
+weights = get_scoring_weights()
+backtest = get_backtest_config()
+```
+
+## 数据源配置
+
+### 东方财富 API
+
+| 端点 | 功能 | 触发关键词 |
+|------|------|------------|
+| `news-search` | 金融资讯检索 | 资讯、新闻、公告、研报、舆情 |
+| `query` | 结构化金融数据查询 | 行情、资金流向、财务、估值、指标 |
+| `stock-screen` | 自然语言智能选股 | 选股、筛选、股票池、低价股、高增长 |
+
+配置方式：
+1. 复制 `.env.example` 为 `.env.local`
+2. 填入自己的 API Key（`EASTMONEY_APIKEY`）
+
+### AKShare（免费，无需配置）
+
+```bash
+pip install akshare
+```
 
 ## 双轨评分公式
 
@@ -173,50 +292,29 @@ run_expert_identifier_agent → supervisor_review → render_report
 
 最终标签：可做 / 观察 / 回避
 
-## 东方财富 API 配置
-
-项目支持东方财富免费 API 接入，提供三类能力：
-
-| 端点 | 功能 | 触发关键词 |
-|------|------|------------|
-| `news-search` | 金融资讯检索 | 资讯、新闻、公告、研报、舆情 |
-| `query` | 结构化金融数据查询 | 行情、资金流向、财务、估值、指标 |
-| `stock-screen` | 自然语言智能选股 | 选股、筛选、股票池、低价股、高增长 |
-
-### 配置方式
-
-1. 复制 `.env.example` 为 `.env.local`
-2. 填入自己的 API Key（支持 `EASTMONEY_APIKEY` / `EASTMONEY_API_KEY` / `EM_API_KEY`，推荐 `EASTMONEY_APIKEY`，需自行申请）
-3. 或设置上述环境变量之一
-
-**配额限制**：50 次/日，由 `stock_utils.consume_eastmoney_daily_quota()` 控制
-
-### 关键函数
-
-- `stock_utils.get_eastmoney_apikey()` - 读取 API Key（环境变量 → .env.local → .env）
-- `stock_utils.post_eastmoney(endpoint, payload)` - 东财专用 POST 封装（含脱敏日志）
-- `stock_utils.eastmoney_news_search()` / `eastmoney_query()` / `eastmoney_stock_screen()` - 三类能力入口
-- `team_router.route_eastmoney_intent()` - 意图路由与门控判定
-
-## 跨平台兼容性设计原则
-
-1. **仅使用相对路径**：`stock-reports/`、`assets/`、`references/`、`scripts/`
-2. **Python 标准库**：`scripts/` 下脚本不依赖第三方包
-3. **双路径策略**：优先 Web Search 获取候选快照，再用东财结构化接口复核关键字段
-4. **降级策略**：网络受限时输出结构化模板 + 数据缺失提示
-
 ## 关键文件说明
 
 | 文件 | 用途 |
 |------|------|
-| `SKILL.md` | 技能完整文档：8位专家角色、报告模块清单、预警信号规则 |
-| `scripts/team_router.py` | 模式路由：`should_use_agent_team()`, `build_skill_chain_plan()`, `route_eastmoney_intent()` |
-| `scripts/generate_report.py` | 报告生成：`plan_analysis_route()`, `parse_search_results_to_report()`, `_generate_advice()` |
-| `scripts/report_constants.py` | 报告常量：情感评分上下限、失败码与错误提示、价格有效范围 |
-| `scripts/stock_utils.py` | 股票验证、时间戳处理、东方财富 API 封装、短线指标定义 |
-| `scripts/report_quality_gate.py` | 报告质量门禁：价格一致性、时间锚点、证据链完整性校验 |
-| `scripts/run_report_quality_checks.py` | 批量报告质量检查入口脚本 |
-| `agents/*.md` | 预配置专家 Agent 定义（优先加载，缺失时回退默认） |
-| `assets/报告模板.md` | Obsidian Callout 格式模板 |
-| `docs/agent-teams-blueprint.md` | Agent Teams 编排蓝图：角色定义、输出 schema、裁决规则 |
-| `docs/agent-json-schema-standard.md` | 专家 Agent 统一 JSON Schema 标准（v2），约束输出格式与证据结构 |
+| `SKILL.md` | 技能完整文档 |
+| `scripts/team_router.py` | 模式路由、插件系统 |
+| `scripts/generate_report.py` | 报告生成 |
+| `scripts/backtest_framework.py` | 回测框架 |
+| `scripts/strategy_optimizer.py` | 策略优化器 |
+| `scripts/plugin_base.py` | 插件抽象基类 |
+| `scripts/plugin_loader.py` | 插件加载器 |
+| `scripts/akshare_adapter.py` | AKShare 适配器 |
+| `scripts/technical_indicators.py` | 技术指标计算 |
+| `config/settings.json` | 外置配置 |
+| `plugins/expert/` | 示例插件 |
+
+## 开发建议
+
+1. **修改评分权重**：编辑 `config/settings.json`
+2. **新增专家插件**：在 `plugins/expert/` 创建新文件
+3. **修改回测参数**：编辑 `config/settings.json` 的 `backtest` 节点
+4. **新增技术指标**：修改 `scripts/technical_indicators.py`
+
+## 免责声明
+
+所有分析仅供参考，不构成投资建议。股市有风险，投资需谨慎。
