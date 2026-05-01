@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-purple.svg)
-![Tests](https://img.shields.io/badge/Tests-130%20Passed-success.svg)
+![Tests](https://img.shields.io/badge/Tests-145%20Passed-success.svg)
 
 **A-Share Short-term Trading Analysis Assistant | Team-First Parallel Expert System**
 
@@ -72,7 +72,7 @@ Copy the project to Claude Code skills directory:
 python -m unittest tests/test_stock_skill.py -v
 ```
 
-Current test results: **130 test cases all passed**
+Current test results: **145 test cases all passed**
 
 ### East Money API Configuration (Optional Enhancement)
 
@@ -289,7 +289,7 @@ Test coverage includes:
 - New experts and supervisor arbitration
 - Report quality gates, batch quality checks, and repair suggestion aggregation
 - Complex request end-to-end closed-loop verification
-- Current regression test total: **130 items (all passed)**
+- Current regression test total: **145 items (all passed)**
 
 Common quality-check commands:
 
@@ -320,7 +320,7 @@ This project is licensed under the **MIT License**. See [LICENSE](LICENSE) for d
 - **Batch quality checks improved**
   - `run_report_quality_checks.py` now outputs aggregated rule summaries, severity stats, and repair suggestions
   - Added a repair checklist document for the existing `stock-reports`
-- Regression tests passed: **130/130**
+- Regression tests passed: **145/145**
 
 ### v2.4.2 (2026-03-17)
 

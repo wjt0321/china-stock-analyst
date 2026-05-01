@@ -24,7 +24,7 @@ python -m pytest tests/test_integration.py -v
 python -m unittest tests.test_stock_skill.TestStockSkill.test_should_enable_agent_team_for_multi_stock_request -v
 ```
 
-测试覆盖范围：路由判定、数据审计、专家鉴别、舆情治理、东方财富 API 集成、回测框架、插件系统。当前回归测试：**130 项全部通过**。
+测试覆盖范围：路由判定、数据审计、专家鉴别、舆情治理、东方财富 API 集成、回测框架、插件系统、策略优化、归因分析。当前回归测试：**145 项全部通过**。
 
 ## 目录结构
 
