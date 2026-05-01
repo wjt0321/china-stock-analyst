@@ -1,5 +1,7 @@
 ---
 name: stock-industry-researcher
+version: "2.5.0"
+schema_version: "v2"
 description: 行业研究专家，评估赛道景气、产业链位置与同业相对强弱，提供行业维度结论。
 model: sonnet
 color: teal

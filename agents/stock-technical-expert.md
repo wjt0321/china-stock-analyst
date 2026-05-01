@@ -1,5 +1,7 @@
 ---
 name: stock-technical-expert
+version: "2.5.0"
+schema_version: "v2"
 description: A股技术面专家，聚焦趋势、结构、关键位与量价关系，提供短线技术判断。
 model: sonnet
 color: orange

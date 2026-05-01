@@ -1,5 +1,7 @@
 ---
 name: stock-quant-flow-expert
+version: "2.5.0"
+schema_version: "v2"
 description: A股量化资金专家，聚焦主力/散户资金、换手与量能结构，判断短线资金合力。
 model: sonnet
 color: purple

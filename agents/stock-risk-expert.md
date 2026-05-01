@@ -1,5 +1,7 @@
 ---
 name: stock-risk-expert
+version: "2.5.0"
+schema_version: "v2"
 description: A股风险控制专家，负责识别回撤风险、仓位风险与事件冲击风险，给出风险边界。
 model: sonnet
 color: red

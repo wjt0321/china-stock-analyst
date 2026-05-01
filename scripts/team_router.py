@@ -6,6 +6,13 @@ import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+try:
+    from platform_paths import get_cache_path, ensure_dir
+    _USE_PLATFORM_PATHS = True
+except ImportError:
+    _USE_PLATFORM_PATHS = False
+
 from stock_utils import (
     normalize_stock_name,
     validate_stock_code,
@@ -43,8 +50,12 @@ INTENT_DUPLICATE_WINDOW_SECONDS = 120
 INTENT_DUPLICATE_THRESHOLD = 3
 INTENT_REQUEST_LIMIT_MAX = 50
 INTENT_TIME_RANGE_MAX_DAYS = 180
-_INTENT_CACHE_FILE = Path(__file__).resolve().parent / ".team_router_intent_cache.json"
-_INTENT_ROUTE_LOG_FILE = Path(__file__).resolve().parent / ".team_router_intent_routes.json"
+if _USE_PLATFORM_PATHS:
+    _INTENT_CACHE_FILE = get_cache_path(".team_router_intent_cache.json")
+    _INTENT_ROUTE_LOG_FILE = get_cache_path(".team_router_intent_routes.json")
+else:
+    _INTENT_CACHE_FILE = Path(__file__).resolve().parent / ".team_router_intent_cache.json"
+    _INTENT_ROUTE_LOG_FILE = Path(__file__).resolve().parent / ".team_router_intent_routes.json"
 _INTENT_LOCK = threading.Lock()
 _INTENT_RUNTIME_FALLBACK: dict = {}
 LOGGER = logging.getLogger(__name__)
@@ -636,7 +647,10 @@ def _load_json_file(file_path: Path, default: Any = None) -> dict:
 
 def _save_json_file(file_path: Path, payload: dict) -> bool:
     try:
-        file_path.parent.mkdir(parents=True, exist_ok=True)
+        if _USE_PLATFORM_PATHS:
+            ensure_dir(file_path.parent)
+        else:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
         with file_path.open("w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
         return True

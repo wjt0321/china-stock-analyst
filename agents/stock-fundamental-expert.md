@@ -1,5 +1,7 @@
 ---
 name: stock-fundamental-expert
+version: "2.5.0"
+schema_version: "v2"
 description: A股基本面专家，聚焦营收质量、利润结构、现金流与估值约束，形成基本面短线观点。
 model: sonnet
 color: green

@@ -1,5 +1,7 @@
 ---
 name: stock-macro-expert
+version: "2.5.0"
+schema_version: "v2"
 description: 宏观与政策专家，评估市场风格、政策周期与系统性风险对个股短线交易的影响。
 model: sonnet
 color: cyan

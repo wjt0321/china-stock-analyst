@@ -1,5 +1,7 @@
 ---
 name: stock-identity-auditor
+version: "2.5.0"
+schema_version: "v2"
 description: 专家鉴别Agent，负责代码-名称-价格一致性校验，发现冲突即触发阻断或降级。
 model: sonnet
 color: magenta

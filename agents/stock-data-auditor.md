@@ -1,5 +1,7 @@
 ---
 name: stock-data-auditor
+version: "2.5.0"
+schema_version: "v2"
 description: A股数据审计专家，负责检查价格、资金、时间戳与来源一致性，输出审计结论与降级建议。
 model: sonnet
 color: blue

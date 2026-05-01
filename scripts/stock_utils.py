@@ -14,6 +14,12 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
+try:
+    from platform_paths import get_cache_path, get_config_path, ensure_dir
+    _USE_PLATFORM_PATHS = True
+except ImportError:
+    _USE_PLATFORM_PATHS = False
+
 
 STOCK_NAME_ALIAS_MAP = {
     "浦发银行": ["上海浦东发展银行", "浦发"],
@@ -36,7 +42,10 @@ EASTMONEY_ENDPOINT_NEWS_SEARCH = os.getenv("EASTMONEY_ENDPOINT_NEWS_SEARCH", DEF
 EASTMONEY_ENDPOINT_QUERY = os.getenv("EASTMONEY_ENDPOINT_QUERY", DEFAULT_EASTMONEY_ENDPOINT_QUERY)
 EASTMONEY_ENDPOINT_STOCK_SCREEN = os.getenv("EASTMONEY_ENDPOINT_STOCK_SCREEN", DEFAULT_EASTMONEY_ENDPOINT_STOCK_SCREEN)
 EASTMONEY_DAILY_LIMIT = 50
-_EASTMONEY_COUNTER_FILE = Path(__file__).resolve().parent / ".eastmoney_daily_counter.json"
+if _USE_PLATFORM_PATHS:
+    _EASTMONEY_COUNTER_FILE = get_cache_path(".eastmoney_daily_counter.json")
+else:
+    _EASTMONEY_COUNTER_FILE = Path(__file__).resolve().parent / ".eastmoney_daily_counter.json"
 _EASTMONEY_COUNTER_LOCK = threading.Lock()
 EASTMONEY_EMPTY_RESULT_TIP = (
     "东方财富返回空结果：请缩小时间范围、补充股票代码或改用更具体关键词后重试；"
@@ -486,7 +495,10 @@ def _load_daily_counter() -> dict:
 
 def _save_daily_counter(counter: dict) -> bool:
     try:
-        _EASTMONEY_COUNTER_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if _USE_PLATFORM_PATHS:
+            ensure_dir(_EASTMONEY_COUNTER_FILE.parent)
+        else:
+            _EASTMONEY_COUNTER_FILE.parent.mkdir(parents=True, exist_ok=True)
         with _EASTMONEY_COUNTER_FILE.open("w", encoding="utf-8") as f:
             json.dump(counter, f, ensure_ascii=False)
         return True

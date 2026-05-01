@@ -1,5 +1,7 @@
 ---
 name: stock-event-hunter
+version: "2.5.0"
+schema_version: "v2"
 description: 事件催化专家，识别公告、订单、政策与舆情催化，判断短线事件驱动强度与持续性。
 model: sonnet
 color: yellow
