@@ -23,10 +23,21 @@ try:
 except ImportError:
     _USE_CONFIG_LOADER = False
 
+# 插件支持（可选）
+try:
+    from plugin_loader import create_default_plugin_loader
+    from plugin_base import PluginContext
+    _USE_PLUGINS = True
+except ImportError:
+    _USE_PLUGINS = False
+
 from stock_utils import (
     normalize_stock_name,
     validate_stock_code,
 )
+
+# 插件加载器（延迟初始化）
+_PLUGIN_LOADER = None
 
 
 def _get_intent_config_value(key: str, default):
@@ -854,3 +865,138 @@ def _has_any_keyword(request: str, keywords: list) -> bool:
 
 def _has_all_keywords(request: str, must_include: list, any_group: list) -> bool:
     return all(keyword in request for keyword in must_include) and any(keyword in request for keyword in any_group)
+
+
+# ============================================
+# 插件系统集成
+# ============================================
+
+def _init_plugin_loader() -> bool:
+    """初始化插件加载器（单例）"""
+    global _PLUGIN_LOADER
+    if not _USE_PLUGINS:
+        return False
+    if _PLUGIN_LOADER is not None:
+        return True
+    try:
+        _PLUGIN_LOADER = create_default_plugin_loader()
+        _PLUGIN_LOADER.discover_plugins()
+        return True
+    except Exception as e:
+        LOGGER.error(f"插件加载失败: {e}")
+        return False
+
+
+def get_available_plugins() -> list:
+    """获取所有可用插件信息"""
+    if not _init_plugin_loader():
+        return []
+    return _PLUGIN_LOADER.get_all_metadata()
+
+
+def get_expert_plugins() -> list:
+    """获取所有专家插件"""
+    if not _init_plugin_loader():
+        return []
+    return _PLUGIN_LOADER.get_expert_plugins()
+
+
+def execute_plugin(
+    plugin_name: str,
+    stock_code: str,
+    stock_name: str,
+    request: str,
+    sources: list = None,
+    request_date: str = None,
+    intent_category: str = "query",
+    config: dict = None,
+) -> dict:
+    """执行指定插件"""
+    if not _init_plugin_loader():
+        return {
+            "success": False,
+            "error": "插件系统未启用",
+        }
+
+    plugin = _PLUGIN_LOADER.get_expert_plugin(plugin_name)
+    if not plugin:
+        return {
+            "success": False,
+            "error": f"插件不存在: {plugin_name}",
+        }
+
+    # 构建上下文
+    context = PluginContext(
+        stock_code=stock_code,
+        stock_name=stock_name,
+        request=request,
+        request_date=request_date or "",
+        sources=sources or [],
+        intent_category=intent_category,
+        config=config or {},
+    )
+
+    if not plugin.can_handle(context):
+        return {
+            "success": False,
+            "error": f"插件无法处理此请求: {plugin_name}",
+        }
+
+    # 执行插件
+    try:
+        result = plugin.execute(context)
+        return {
+            "success": result.success,
+            "content": result.content,
+            "data": result.data,
+            "errors": result.errors,
+            "warnings": result.warnings,
+            "metadata": {
+                **plugin.get_metadata(),
+                **result.metadata,
+            },
+        }
+    except Exception as e:
+        LOGGER.error(f"插件执行失败: {e}")
+        return {
+            "success": False,
+            "error": f"插件执行异常: {str(e)}",
+        }
+
+
+def get_matching_plugins(
+    stock_code: str,
+    stock_name: str,
+    request: str,
+    sources: list = None,
+    request_date: str = None,
+    intent_category: str = "query",
+) -> list:
+    """获取所有能处理当前请求的插件"""
+    if not _init_plugin_loader():
+        return []
+
+    context = PluginContext(
+        stock_code=stock_code,
+        stock_name=stock_name,
+        request=request,
+        request_date=request_date or "",
+        sources=sources or [],
+        intent_category=intent_category,
+    )
+
+    matching = []
+    for plugin in _PLUGIN_LOADER.get_expert_plugins():
+        try:
+            if plugin.can_handle(context):
+                matching.append({
+                    "name": plugin.name,
+                    "version": plugin.version,
+                    "category": plugin.category,
+                    "description": plugin.description,
+                    "author": plugin.author,
+                })
+        except Exception as e:
+            LOGGER.error(f"检查插件失败 {plugin.name}: {e}")
+
+    return matching
