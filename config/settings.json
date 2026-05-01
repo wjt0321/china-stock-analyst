@@ -1,14 +1,12 @@
 {
-  "version": "2.5.0",
+  "version": "2.6.0",
   "schema_version": "v2",
   "description": "A股智能分析助手配置",
 
   "scoring": {
     "short_term_weight": 0.40,
     "fundamental_weight": 0.35,
-    "sentiment_weight": 0.25,
-    "high_intent_min_screening_count": 10,
-    "high_intent_min_recommend_count": 3
+    "sentiment_weight": 0.25
   },
 
   "quality_gate": {
@@ -28,44 +26,28 @@
   "sentiment": {
     "max_impact": 2.0,
     "emotional_keywords": [
-      "暴涨",
-      "暴跌",
-      "惊天",
-      "炸裂",
-      "血赚",
-      "必涨",
-      "必赢",
-      "内幕",
-      "速看"
+      "暴涨", "暴跌", "惊天", "炸裂", "血赚", "必涨", "必赢", "内幕", "速看"
     ],
     "low_credibility_hints": [
-      "转载",
-      "自媒体",
-      "论坛",
-      "股吧",
-      "传闻",
-      "小作文",
-      "未证实"
+      "转载", "自媒体", "论坛", "股吧", "传闻", "小作文", "未证实"
     ],
     "positive_keywords": [
-      "利好",
-      "增持",
-      "中标",
-      "回购",
-      "增长",
-      "上调",
-      "突破",
-      "创新高"
+      "利好", "增持", "中标", "回购", "增长", "上调", "突破", "创新高"
     ],
     "negative_keywords": [
-      "利空",
-      "减持",
-      "处罚",
-      "亏损",
-      "下调",
-      "暴雷",
-      "跌停",
-      "终止"
+      "利空", "减持", "处罚", "亏损", "下调", "暴雷", "跌停", "终止"
+    ],
+    "industry_positive_keywords": [
+      "景气", "扩产", "提价", "复苏", "高增长", "需求回暖", "高景气"
+    ],
+    "industry_negative_keywords": [
+      "过剩", "下行", "去库存", "收缩", "需求疲弱", "价格战"
+    ],
+    "event_positive_keywords": [
+      "中标", "回购", "增持", "政策支持", "订单", "突破"
+    ],
+    "event_negative_keywords": [
+      "处罚", "问询", "减持", "终止", "风险提示", "监管关注"
     ]
   },
 
@@ -81,8 +63,55 @@
   },
 
   "cache": {
-    "intent_ttl_days": 7,
+    "intent_ttl_seconds": 300,
+    "intent_duplicate_window_seconds": 120,
+    "intent_duplicate_threshold": 3,
     "route_log_max_entries": 1000
+  },
+
+  "intent": {
+    "request_limit_max": 50,
+    "time_range_max_days": 180,
+    "high_intent_min_screening_count": 10,
+    "high_intent_min_recommend_count": 3,
+    "priority": {
+      "stock-screen": 3,
+      "query": 2,
+      "news-search": 1
+    },
+    "keywords": {
+      "news-search": ["资讯", "新闻", "快讯", "公告", "研报", "舆情", "事件驱动"],
+      "query": ["行情", "资金流向", "财务", "估值", "指标", "主力净流入", "成交额"],
+      "stock-screen": ["选股", "筛选", "股票池", "低价股", "高增长", "量价齐升", "策略筛选"]
+    },
+    "stage_keywords": {
+      "data_collect": ["今日", "当日", "实时", "最新", "采集", "收集", "抓取"],
+      "screening": ["筛选", "选股", "候选", "股票池"],
+      "expert_discussion": ["专家讨论", "讨论", "会诊", "辩论", "交叉质疑"],
+      "recommendation": ["推荐", "建议", "优选"]
+    }
+  },
+
+  "team": {
+    "trigger_keywords": [
+      "对比", "验证", "复盘", "冲突", "分歧", "组合", "股票池", "候选", "多股",
+      "短线指标", "指标增强", "推荐", "筛选", "审计"
+    ],
+    "preconfigured_expert_agents": {
+      "run_data_auditor": "stock-data-auditor",
+      "run_fundamental_expert": "stock-fundamental-expert",
+      "run_technical_expert": "stock-technical-expert",
+      "run_quant_flow_expert": "stock-quant-flow-expert",
+      "run_risk_expert": "stock-risk-expert",
+      "run_macro_expert": "stock-macro-expert",
+      "run_industry_researcher_expert": "stock-industry-researcher",
+      "run_event_hunter_expert": "stock-event-hunter",
+      "run_expert_identifier_agent": "stock-identity-auditor"
+    },
+    "expected_expert_agents": {
+      "industry_researcher": "stock-industry-researcher",
+      "event_hunter": "stock-event-hunter"
+    }
   },
 
   "eastmoney": {
@@ -90,37 +119,12 @@
     "cache_deduplication": true
   },
 
-  "market": {
-    "a_share_holidays": [
-      "2026-01-01",
-      "2026-01-28",
-      "2026-01-29",
-      "2026-01-30",
-      "2026-01-31",
-      "2026-02-01",
-      "2026-02-02",
-      "2026-02-03",
-      "2026-02-04",
-      "2026-04-03",
-      "2026-04-04",
-      "2026-04-05",
-      "2026-04-06",
-      "2026-05-01",
-      "2026-05-02",
-      "2026-05-03",
-      "2026-05-04",
-      "2026-05-05",
-      "2026-06-01",
-      "2026-06-19",
-      "2026-09-15",
-      "2026-10-01",
-      "2026-10-02",
-      "2026-10-03",
-      "2026-10-04",
-      "2026-10-05",
-      "2026-10-06",
-      "2026-10-07"
-    ]
+  "akshare": {
+    "enabled": true,
+    "default_history_days": 60,
+    "default_adjust": "qfq",
+    "fund_flow_days": 120,
+    "news_limit": 10
   },
 
   "backtest": {
@@ -140,5 +144,20 @@
     "support_resistance_lookback": 20,
     "support_resistance_tolerance": 0.01,
     "stop_loss_multiplier": 2.0
+  },
+
+  "market": {
+    "a_share_holidays_2026": [
+      "2026-01-01",
+      "2026-01-28", "2026-01-29", "2026-01-30", "2026-01-31",
+      "2026-02-01", "2026-02-02", "2026-02-03", "2026-02-04",
+      "2026-04-03", "2026-04-04", "2026-04-05", "2026-04-06",
+      "2026-05-01", "2026-05-02", "2026-05-03", "2026-05-04", "2026-05-05",
+      "2026-06-01",
+      "2026-06-19",
+      "2026-09-15",
+      "2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04",
+      "2026-10-05", "2026-10-06", "2026-10-07"
+    ]
   }
 }

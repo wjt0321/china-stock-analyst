@@ -220,6 +220,33 @@ _PRICE_ANCHOR_RE = re.compile(
     r'(?P<value>[0-9]+\.?[0-9]*)\s*元'
 )
 _PRICE_FALLBACK_RE = re.compile(r'([0-9]+\.?[0-9]*)\s*元(?:/股)?')
+
+_CHANGE_PCT_RE = re.compile(r'([+-]?\d+\.?\d*)\s*%')
+_TURNOVER_RE = re.compile(r'成交额[^0-9]*([0-9]+\.?[0-9]*)\s*(亿元|亿|万元|万|元)')
+_VWAP_PCT_RE = re.compile(r'VWAP[^0-9\-+]*([+-]?[0-9]+\.?[0-9]*)\s*%', re.IGNORECASE)
+_VOLUME_RATIO_RE = re.compile(r'量比[^0-9]*([0-9]+\.?[0-9]*)')
+_ATR_STOP_RE = re.compile(r'(?:建议)?止损[^0-9]*([0-9]+\.?[0-9]*)\s*元')
+_ATR_VALUE_RE = re.compile(r'ATR(?:14)?[^0-9]*([0-9]+\.?[0-9]*)', re.IGNORECASE)
+_REVENUE_RE = re.compile(r'营业收入[^0-9]*([0-9]+\.?[0-9]*)\s*(亿元|亿|万元|万|元)')
+_YOY_RE = re.compile(r'同比(?:增长|下降)?\s*([+-]?[0-9]+\.?[0-9]*)\s*%')
+_QOQ_RE = re.compile(r'环比(?:增长|下降)?\s*([+-]?[0-9]+\.?[0-9]*)\s*%')
+_REPORT_PERIOD_RE = re.compile(r'(20\d{2})年(一季报|半年报|三季报|年报|一季度|二季度|三季度|四季度)')
+_REPORT_QUARTER_RE = re.compile(r'(20\d{2})[年\-]?[Qq]([1-4])')
+_REPORT_DATE_RE = re.compile(r'(20\d{2})[-年](\d{1,2})[-月](\d{1,2})')
+_FLOW_IN_RE = re.compile(r'(主力|超大单|大单|中单|小单)[^0-9\-+]*流入[^0-9\-+]*([+-]?[0-9]+\.?[0-9]*)\s*(亿元|亿|万元|万|元)')
+_FLOW_OUT_RE = re.compile(r'(主力|超大单|大单|中单|小单)[^0-9\-+]*流出[^0-9\-+]*([0-9]+\.?[0-9]*)\s*(亿元|亿|万元|万|元)')
+_IDENTITY_SEPARATORS_RE = re.compile(r"(与|和|及|或|对比|vs|VS|/|、)")
+_CURRENCY_USD_RE = re.compile(r"(美元|USD|美金)", re.IGNORECASE)
+_CURRENCY_HKD_RE = re.compile(r"(港元|HKD)", re.IGNORECASE)
+_CURRENCY_CNY_RE = re.compile(r"(人民币|CNY|RMB|元)", re.IGNORECASE)
+_PRICE_UNIT_CENT_RE = re.compile(r"(分/股|分每股|分人民币)")
+_PRICE_UNIT_SHARE_RE = re.compile(r"(港元/股|美元/股|元/股|每股)")
+_YESTERDAY_CLOSE_RE = re.compile(r"(昨收|昨日收盘|前收|上一交易日收盘|历史收盘|上周收盘|上月收盘)")
+_TODAY_CLOSE_RE = re.compile(r"(今日收盘|当日收盘|本日收盘|今日盘后|当日盘后)")
+_CHINESE_CHAR_RE = re.compile(r"[\u4e00-\u9fa5A-Za-z]")
+_DATETIME_PCT_RE = re.compile(r"(20\d{2}[-/年]\d{1,2}[-/月]\d{1,2}|\d+\.?\d*%|\d+\.?\d*亿|\d+\.?\d*万)")
+_NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
 # A股合理价格区间（单位：元/股）
 _A_SHARE_PRICE_MIN = 0.1
 _A_SHARE_PRICE_MAX = 600.0
@@ -249,10 +276,10 @@ def _parse_price(snippet: str, request_date: str = "") -> dict:
                 continue
 
     # 匹配涨跌幅
-    change_match = re.search(r'([+-]?\d+\.?\d*)\s*%', snippet)
+    change_match = _CHANGE_PCT_RE.search(snippet)
     if change_match:
         parsed['change'] = change_match.group(1)
-    turnover_match = re.search(r'成交额[^0-9]*([0-9]+\.?[0-9]*)\s*(亿元|亿|万元|万|元)', snippet)
+    turnover_match = _TURNOVER_RE.search(snippet)
     if turnover_match:
         turnover = _normalize_to_wan(float(turnover_match.group(1)), turnover_match.group(2))
         parsed['turnover'] = f"{turnover:.2f}"
@@ -324,14 +351,14 @@ def _normalize_to_wan(value: float, unit: str) -> float:
 
 def _parse_financial(snippet: str) -> dict:
     parsed = {'news': snippet[:200]}
-    revenue_match = re.search(r'营业收入[^0-9]*([0-9]+\.?[0-9]*)\s*(亿元|亿|万元|万|元)', snippet)
+    revenue_match = _REVENUE_RE.search(snippet)
     if revenue_match:
         parsed['revenue'] = f"{float(revenue_match.group(1)):.2f}"
         parsed['revenue_unit'] = revenue_match.group(2)
-    yoy_match = re.search(r'同比(?:增长|下降)?\s*([+-]?[0-9]+\.?[0-9]*)\s*%', snippet)
+    yoy_match = _YOY_RE.search(snippet)
     if yoy_match:
         parsed['yoy'] = f"{float(yoy_match.group(1)):.2f}"
-    qoq_match = re.search(r'环比(?:增长|下降)?\s*([+-]?[0-9]+\.?[0-9]*)\s*%', snippet)
+    qoq_match = _QOQ_RE.search(snippet)
     if qoq_match:
         parsed['qoq'] = f"{float(qoq_match.group(1)):.2f}"
     # 优先从 snippet 提取财报期（避免用今天覆盖财报实际报告期）
@@ -348,7 +375,7 @@ def _parse_financial(snippet: str) -> dict:
 def _extract_financial_report_date(snippet: str) -> str:
     """从财务文本中提取报告期日期，支持季报/年报/半年报/Qx 格式"""
     # 格式1：2025年三季报、2024年年报
-    m = re.search(r'(20\d{2})年(一季报|半年报|三季报|年报|一季度|二季度|三季度|四季度)', snippet)
+    m = _REPORT_PERIOD_RE.search(snippet)
     if m:
         year = int(m.group(1))
         period = m.group(2)
@@ -360,13 +387,13 @@ def _extract_financial_report_date(snippet: str) -> str:
         }
         return period_date_map.get(period, '')
     # 格式2：2024Q1、2024Q4
-    m2 = re.search(r'(20\d{2})[年\-]?[Qq]([1-4])', snippet)
+    m2 = _REPORT_QUARTER_RE.search(snippet)
     if m2:
         year, quarter = int(m2.group(1)), int(m2.group(2))
         q_end = {1: '03-31', 2: '06-30', 3: '09-30', 4: '12-31'}
         return f'{year}-{q_end[quarter]}'
     # 格式3：2025-03-31 或 2025年03月31日
-    m3 = re.search(r'(20\d{2})[-年](\d{1,2})[-月](\d{1,2})', snippet)
+    m3 = _REPORT_DATE_RE.search(snippet)
     if m3:
         return f'{m3.group(1)}-{int(m3.group(2)):02d}-{int(m3.group(3)):02d}'
     return ''
@@ -380,16 +407,16 @@ def _contains_shortline_indicator(snippet: str, title: str) -> bool:
 
 def _parse_shortline_signals(snippet: str, report: dict):
     signals = report.setdefault("shortline_signals", {})
-    vwap_match = re.search(r'VWAP[^0-9\-+]*([+-]?[0-9]+\.?[0-9]*)\s*%', snippet, re.IGNORECASE)
+    vwap_match = _VWAP_PCT_RE.search(snippet)
     if vwap_match:
         signals["vwap_deviation"] = f"{float(vwap_match.group(1)):.2f}"
-    volume_ratio_match = re.search(r'量比[^0-9]*([0-9]+\.?[0-9]*)', snippet)
+    volume_ratio_match = _VOLUME_RATIO_RE.search(snippet)
     if volume_ratio_match:
         signals["volume_ratio"] = f"{float(volume_ratio_match.group(1)):.2f}"
-    atr_stop_match = re.search(r'(?:建议)?止损[^0-9]*([0-9]+\.?[0-9]*)\s*元', snippet)
+    atr_stop_match = _ATR_STOP_RE.search(snippet)
     if atr_stop_match:
         signals["atr_stop"] = f"{float(atr_stop_match.group(1)):.2f}"
-    atr_value_match = re.search(r'ATR(?:14)?[^0-9]*([0-9]+\.?[0-9]*)', snippet, re.IGNORECASE)
+    atr_value_match = _ATR_VALUE_RE.search(snippet)
     if atr_value_match:
         signals["atr_value"] = f"{float(atr_value_match.group(1)):.2f}"
     price_val = _safe_float(report.get("price_info", {}).get("price"))
@@ -550,7 +577,7 @@ def _extract_adjacent_identity_candidates(text: str, stock_code: str, code_start
 
 def _normalize_identity_name_candidate(raw_name: str) -> str:
     cleaned = re.sub(r"^(股票|个股|代码|标的)", "", raw_name or "").strip(" -—:：，,。.;；")
-    if not cleaned or not re.search(r"[\u4e00-\u9fa5A-Za-z]", cleaned):
+    if not cleaned or not _CHINESE_CHAR_RE.search(cleaned):
         return ""
     if any(keyword in cleaned for keyword in _IDENTITY_NOISE_KEYWORDS):
         return ""
@@ -571,7 +598,7 @@ def _extract_stock_name_candidates(text: str, stock_code: str) -> list:
     for pattern in patterns:
         for match in re.findall(pattern, text or ""):
             cleaned = re.sub(r"^(股票|个股|代码|标的)", "", match).strip(" -—:：，,。.;；")
-            if cleaned and re.search(r"[\u4e00-\u9fa5A-Za-z]", cleaned):
+            if cleaned and _CHINESE_CHAR_RE.search(cleaned):
                 if any(keyword in cleaned for keyword in noise_keywords):
                     continue
                 candidates.append(cleaned)
@@ -592,16 +619,16 @@ def _extract_price_semantic(text: str, source: dict, request_date: str = "") -> 
     if not _is_same_day_close_semantic(merged_text, request_date=request_date):
         return {}
     currency = "CNY"
-    if re.search(r"(美元|USD|美金)", merged_text, re.IGNORECASE):
+    if _CURRENCY_USD_RE.search(merged_text):
         currency = "USD"
-    elif re.search(r"(港元|HKD)", merged_text, re.IGNORECASE):
+    elif _CURRENCY_HKD_RE.search(merged_text):
         currency = "HKD"
-    elif re.search(r"(人民币|CNY|RMB|元)", merged_text, re.IGNORECASE):
+    elif _CURRENCY_CNY_RE.search(merged_text):
         currency = "CNY"
     unit = "元/股"
-    if re.search(r"(分/股|分每股|分人民币)", merged_text):
+    if _PRICE_UNIT_CENT_RE.search(merged_text):
         unit = "分/股"
-    elif re.search(r"(港元/股|美元/股|元/股|每股)", merged_text):
+    elif _PRICE_UNIT_SHARE_RE.search(merged_text):
         if currency == "USD":
             unit = "美元/股"
         elif currency == "HKD":
@@ -622,9 +649,9 @@ def _is_same_day_close_semantic(text: str, request_date: str = "") -> bool:
     merged_text = text or ""
     if "收盘价" not in merged_text and "收盘" not in merged_text:
         return True
-    if re.search(r"(昨收|昨日收盘|前收|上一交易日收盘|历史收盘|上周收盘|上月收盘)", merged_text):
+    if _YESTERDAY_CLOSE_RE.search(merged_text):
         return False
-    if re.search(r"(今日收盘|当日收盘|本日收盘|今日盘后|当日盘后)", merged_text):
+    if _TODAY_CLOSE_RE.search(merged_text):
         return True
     request_dt = _parse_day(request_date) or datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     explicit_dt = _parse_day(extract_timestamp_text(merged_text, ""))
@@ -820,7 +847,7 @@ def _has_field_value_conflict(field: str, records: list) -> bool:
 
 
 def _extract_numeric_value(text: str):
-    matched = re.search(r"-?\d+(?:\.\d+)?", str(text or ""))
+    matched = _NUMBER_RE.search(str(text or ""))
     if not matched:
         return None
     try:
@@ -947,7 +974,7 @@ def _score_news_quality(news_item: dict) -> dict:
     else:
         score += 5
         reject_reasons.append("来源类别不明确")
-    if re.search(r"(20\d{2}[-/年]\d{1,2}[-/月]\d{1,2}|\d+\.?\d*%|\d+\.?\d*亿|\d+\.?\d*万)", text):
+    if _DATETIME_PCT_RE.search(text):
         score += 25
         reasons.append("包含可验证事实数据")
     else:

@@ -13,43 +13,62 @@ try:
 except ImportError:
     _USE_PLATFORM_PATHS = False
 
+try:
+    from config_loader import (
+        get_intent_config,
+        get_team_config,
+        get_cache_config,
+    )
+    _USE_CONFIG_LOADER = True
+except ImportError:
+    _USE_CONFIG_LOADER = False
+
 from stock_utils import (
     normalize_stock_name,
     validate_stock_code,
 )
 
 
-TEAM_TRIGGER_KEYWORDS = [
-    "对比",
-    "验证",
-    "复盘",
-    "冲突",
-    "分歧",
-    "组合",
-    "股票池",
-    "候选",
-    "多股",
-    "短线指标",
-    "指标增强",
-    "推荐",
-    "筛选",
-    "审计",
-]
+def _get_intent_config_value(key: str, default):
+    if _USE_CONFIG_LOADER:
+        config = get_intent_config()
+        return config.get(key, default)
+    return default
 
-HIGH_INTENT_STAGE_KEYWORDS = {
+
+def _get_team_config_value(key: str, default):
+    if _USE_CONFIG_LOADER:
+        config = get_team_config()
+        return config.get(key, default)
+    return default
+
+
+def _get_cache_config_value(key: str, default):
+    if _USE_CONFIG_LOADER:
+        config = get_cache_config()
+        return config.get(key, default)
+    return default
+
+
+_TEAM_TRIGGER_KEYWORDS = _get_team_config_value("trigger_keywords", [
+    "对比", "验证", "复盘", "冲突", "分歧", "组合", "股票池", "候选", "多股",
+    "短线指标", "指标增强", "推荐", "筛选", "审计",
+])
+
+_HIGH_INTENT_STAGE_KEYWORDS = _get_intent_config_value("stage_keywords", {
     "data_collect": ["今日", "当日", "实时", "最新", "采集", "收集", "抓取"],
     "screening": ["筛选", "选股", "候选", "股票池"],
     "expert_discussion": ["专家讨论", "讨论", "会诊", "辩论", "交叉质疑"],
     "recommendation": ["推荐", "建议", "优选"],
-}
+})
 
-HIGH_INTENT_MIN_SCREENING_COUNT = 10
-HIGH_INTENT_MIN_RECOMMEND_COUNT = 3
-INTENT_CACHE_TTL_SECONDS = 300
-INTENT_DUPLICATE_WINDOW_SECONDS = 120
-INTENT_DUPLICATE_THRESHOLD = 3
-INTENT_REQUEST_LIMIT_MAX = 50
-INTENT_TIME_RANGE_MAX_DAYS = 180
+_HIGH_INTENT_MIN_SCREENING_COUNT = _get_intent_config_value("high_intent_min_screening_count", 10)
+_HIGH_INTENT_MIN_RECOMMEND_COUNT = _get_intent_config_value("high_intent_min_recommend_count", 3)
+_INTENT_CACHE_TTL_SECONDS = _get_cache_config_value("intent_ttl_seconds", 300)
+_INTENT_DUPLICATE_WINDOW_SECONDS = _get_cache_config_value("intent_duplicate_window_seconds", 120)
+_INTENT_DUPLICATE_THRESHOLD = _get_cache_config_value("intent_duplicate_threshold", 3)
+_INTENT_REQUEST_LIMIT_MAX = _get_intent_config_value("request_limit_max", 50)
+_INTENT_TIME_RANGE_MAX_DAYS = _get_intent_config_value("time_range_max_days", 180)
 if _USE_PLATFORM_PATHS:
     _INTENT_CACHE_FILE = get_cache_path(".team_router_intent_cache.json")
     _INTENT_ROUTE_LOG_FILE = get_cache_path(".team_router_intent_routes.json")
@@ -115,7 +134,7 @@ def should_use_agent_team(user_request: str) -> dict:
         _append_reason(reasons, "多标的")
     if _looks_like_multi_target_by_names(normalized_request):
         _append_reason(reasons, "多标的")
-    if any(keyword in request for keyword in TEAM_TRIGGER_KEYWORDS):
+    if any(keyword in request for keyword in _TEAM_TRIGGER_KEYWORDS):
         _append_reason(reasons, "验证")
     if "短线" in request and "指标" in request:
         _append_reason(reasons, "指标增强")
@@ -201,8 +220,8 @@ def build_shortline_supervisor_rules() -> dict:
         ],
         "high_intent_activation": {
             "required_stages": ["data_collect", "screening", "expert_discussion", "recommendation"],
-            "screening_min_count": HIGH_INTENT_MIN_SCREENING_COUNT,
-            "recommendation_min_count": HIGH_INTENT_MIN_RECOMMEND_COUNT,
+            "screening_min_count": _HIGH_INTENT_MIN_SCREENING_COUNT,
+            "recommendation_min_count": _HIGH_INTENT_MIN_RECOMMEND_COUNT,
         },
         "expert_assignments": {
             "run_data_auditor": ["field_timestamp_check", "source_consistency_check", "freshness_gate"],
@@ -253,10 +272,10 @@ def build_shortline_supervisor_rules() -> dict:
             "intents": list(INTENT_KEYWORDS.keys()),
             "intent_keywords": dict(INTENT_KEYWORDS),
             "critical_gate": {
-                "request_limit_max": INTENT_REQUEST_LIMIT_MAX,
-                "time_range_max_days": INTENT_TIME_RANGE_MAX_DAYS,
-                "duplicate_window_seconds": INTENT_DUPLICATE_WINDOW_SECONDS,
-                "duplicate_threshold": INTENT_DUPLICATE_THRESHOLD,
+                "request_limit_max": _INTENT_REQUEST_LIMIT_MAX,
+                "time_range_max_days": _INTENT_TIME_RANGE_MAX_DAYS,
+                "duplicate_window_seconds": _INTENT_DUPLICATE_WINDOW_SECONDS,
+                "duplicate_threshold": _INTENT_DUPLICATE_THRESHOLD,
             },
             "local_persistence": {
                 "cache_file": str(_INTENT_CACHE_FILE),
@@ -369,19 +388,19 @@ def _build_critical_gate(route: dict, request: str, stock_code: str = "", stock_
     requested_limit = _extract_request_limit(request)
     requested_days = _extract_time_range_days(request)
     intent = route.get("intent_category", "none")
-    if requested_limit and requested_limit > INTENT_REQUEST_LIMIT_MAX:
+    if requested_limit and requested_limit > _INTENT_REQUEST_LIMIT_MAX:
         blocked = True
         _append_guardrail_failure(
             gate={"reasons": reasons, "reason_codes": reason_codes, "user_tips": user_tips},
             code=FAILURE_REASON_CODE_REQUEST_LIMIT_EXCEEDED,
-            message=f"返回数量超限({requested_limit}>{INTENT_REQUEST_LIMIT_MAX})",
+            message=f"返回数量超限({requested_limit}>{_INTENT_REQUEST_LIMIT_MAX})",
         )
-    if requested_days and requested_days > INTENT_TIME_RANGE_MAX_DAYS:
+    if requested_days and requested_days > _INTENT_TIME_RANGE_MAX_DAYS:
         blocked = True
         _append_guardrail_failure(
             gate={"reasons": reasons, "reason_codes": reason_codes, "user_tips": user_tips},
             code=FAILURE_REASON_CODE_TIME_RANGE_EXCEEDED,
-            message=f"时间范围超限({requested_days}>{INTENT_TIME_RANGE_MAX_DAYS}天)",
+            message=f"时间范围超限({requested_days}>{_INTENT_TIME_RANGE_MAX_DAYS}天)",
         )
     has_target = bool(stock_code) or bool(stock_name) or bool(re.findall(r"(?<!\d)[036]\d{5}(?!\d)", request))
     if intent in {"news-search", "query"} and not has_target:
@@ -449,8 +468,8 @@ def _apply_intent_cache(route: dict, gate: dict, normalized_request: str) -> dic
             hit_count = int(cached.get("hit_count", 0)) + 1
             first_seen = _parse_cache_time(cached.get("first_seen")) or now
             duplicate_threshold_triggered = (
-                hit_count > INTENT_DUPLICATE_THRESHOLD
-                and (now - first_seen) <= timedelta(seconds=INTENT_DUPLICATE_WINDOW_SECONDS)
+                hit_count > _INTENT_DUPLICATE_THRESHOLD
+                and (now - first_seen) <= timedelta(seconds=_INTENT_DUPLICATE_WINDOW_SECONDS)
             )
             if duplicate_threshold_triggered:
                 gate["passed"] = False
@@ -459,7 +478,7 @@ def _apply_intent_cache(route: dict, gate: dict, normalized_request: str) -> dic
                 _append_guardrail_failure(
                     gate=gate,
                     code=FAILURE_REASON_CODE_DUPLICATE_REQUEST,
-                    message=f"命中重复请求阈值({hit_count}>{INTENT_DUPLICATE_THRESHOLD})",
+                    message=f"命中重复请求阈值({hit_count}>{_INTENT_DUPLICATE_THRESHOLD})",
                 )
             items[cache_key] = {
                 "key": cache_key,
@@ -511,7 +530,7 @@ def _cleanup_intent_cache(items: dict, now: datetime) -> None:
     expired_keys = []
     for key, value in items.items():
         created_at = _parse_cache_time(value.get("created_at")) or _parse_cache_time(value.get("updated_at"))
-        if not created_at or (now - created_at).total_seconds() > INTENT_CACHE_TTL_SECONDS:
+        if not created_at or (now - created_at).total_seconds() > _INTENT_CACHE_TTL_SECONDS:
             expired_keys.append(key)
     for key in expired_keys:
         items.pop(key, None)
@@ -606,7 +625,7 @@ def _is_cache_alive(cache_item: dict, now: datetime) -> bool:
     created_at = _parse_cache_time(cache_item.get("created_at")) or _parse_cache_time(cache_item.get("updated_at"))
     if not created_at:
         return False
-    return (now - created_at).total_seconds() <= INTENT_CACHE_TTL_SECONDS
+    return (now - created_at).total_seconds() <= _INTENT_CACHE_TTL_SECONDS
 
 
 def _parse_cache_time(text: str):
@@ -745,17 +764,17 @@ def _match_high_intent_pipeline(request: str) -> dict:
         return {"matched": False}
     stage_hits = {
         "data_collect": _has_all_keywords(request, ["今日"], ["采集", "收集", "抓取", "获取"]),
-        "screening": _has_any_keyword(request, HIGH_INTENT_STAGE_KEYWORDS["screening"]),
-        "expert_discussion": _has_any_keyword(request, HIGH_INTENT_STAGE_KEYWORDS["expert_discussion"]),
-        "recommendation": _has_any_keyword(request, HIGH_INTENT_STAGE_KEYWORDS["recommendation"]),
+        "screening": _has_any_keyword(request, _HIGH_INTENT_STAGE_KEYWORDS["screening"]),
+        "expert_discussion": _has_any_keyword(request, _HIGH_INTENT_STAGE_KEYWORDS["expert_discussion"]),
+        "recommendation": _has_any_keyword(request, _HIGH_INTENT_STAGE_KEYWORDS["recommendation"]),
     }
     screening_count = _extract_quantified_count(request, ["筛选", "选股", "候选"])
     recommend_count = _extract_quantified_count(request, ["推荐", "建议", "优选"])
     count_ready = (
         screening_count is not None
         and recommend_count is not None
-        and screening_count >= HIGH_INTENT_MIN_SCREENING_COUNT
-        and recommend_count >= HIGH_INTENT_MIN_RECOMMEND_COUNT
+        and screening_count >= _HIGH_INTENT_MIN_SCREENING_COUNT
+        and recommend_count >= _HIGH_INTENT_MIN_RECOMMEND_COUNT
     )
     matched = all(stage_hits.values()) and count_ready
     return {

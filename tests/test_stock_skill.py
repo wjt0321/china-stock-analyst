@@ -182,7 +182,7 @@ class TestStockSkill(unittest.TestCase):
         request = "请查询600000行情成交额"
         normalized = tr._normalize_request(request)
         cache_key = tr._build_intent_cache_key(normalized)
-        expired_at = (datetime.now() - timedelta(seconds=tr.INTENT_CACHE_TTL_SECONDS + 5)).strftime("%Y-%m-%d %H:%M:%S")
+        expired_at = (datetime.now() - timedelta(seconds=tr._INTENT_CACHE_TTL_SECONDS + 5)).strftime("%Y-%m-%d %H:%M:%S")
         with mock.patch.object(tr, "_load_json_file", return_value={"items": {"legacy-key": {"updated_at": expired_at}}}), \
             mock.patch.object(tr, "_save_json_file", return_value=True):
             routed = tr.route_eastmoney_intent(request)
@@ -2160,7 +2160,7 @@ class TestStockSkill(unittest.TestCase):
     def test_intent_cache_ttl_should_use_created_at_instead_of_updated_at(self):
         self._clear_team_router_runtime_state()
         request = "请查询600000行情成交额"
-        stale_created = (datetime.now() - timedelta(seconds=tr.INTENT_CACHE_TTL_SECONDS + 30)).strftime("%Y-%m-%d %H:%M:%S")
+        stale_created = (datetime.now() - timedelta(seconds=tr._INTENT_CACHE_TTL_SECONDS + 30)).strftime("%Y-%m-%d %H:%M:%S")
         fresh_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         payload = {
             "items": {
