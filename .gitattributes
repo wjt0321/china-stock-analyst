@@ -1,0 +1,27 @@
+# Ensure shell scripts always have LF line endings
+*.sh text eol=lf
+
+# Python files
+*.py text eol=lf
+
+# Common text files
+*.md text eol=lf
+*.json text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.cfg text eol=lf
+*.ini text eol=lf
+*.env text eol=lf
+*.env.example text eol=lf
+
+# Batch files - keep CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Explicitly mark binary files
+*.png binary
+*.jpg binary
+*.gif binary
+*.pyc binary
