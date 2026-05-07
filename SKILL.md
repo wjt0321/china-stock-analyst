@@ -1,8 +1,13 @@
 ---
 name: china-stock-analyst
-description: A股短线分析助手，聚焦"短线交易信号 + 营收质量"双轨研判。使用时机：分析单只A股、对比多只股票、验证历史报告、回测策略表现、优化参数配置。默认采用 Team-First 并行分析，支持插件化扩展、回测框架、策略优化。
+description: A股短线分析助手，聚焦“短线交易信号 + 营收质量”双轨研判。使用时机：分析单只A股、对比多只股票、验证历史报告、回测策略表现、优化参数配置。默认采用 Team-First 并行分析，支持插件化扩展、回测框架、策略优化。
+env:
+  - EASTMONEY_APIKEY: "东方财富妙想 API Key，用于结构化复核（非主数据源）"
+priority: primary
+rule: >
+  Web Search > mx-* API。mx-data/mx-search/mx-xuangu 仅作辅助，
+  由 team_router.py 统一调度，不独立拦截 A 股分析请求。
 ---
-
 # A股智能分析助手
 
 ## 适用场景
