@@ -46,3 +46,37 @@ def test_analysis_engine_with_candles_is_json_serializable():
     assert report["expert_outputs"]["technical"]["evidences"]
     # Must be JSON-serializable for Tauri sidecar responses.
     json.dumps(report)
+
+
+def test_technical_expert_with_candles():
+    config = MagicMock()
+    config.get_analysis_config.return_value = {
+        "short_term_weight": 0.40,
+        "fundamental_weight": 0.35,
+        "sentiment_weight": 0.25,
+    }
+    engine = AnalysisEngine(config)
+    candles = [
+        {"date": "2026-07-0%d" % i, "open": 9.0, "high": 10.0, "low": 8.5, "close": 9.5 + i * 0.1, "volume": 1000}
+        for i in range(1, 25)
+    ]
+    validated = {"price": {"value": 11.0}, "akshare_candles": {"value": candles}}
+    report = engine.analyze("600519", validated)
+    assert report["expert_outputs"]["technical"]["decision_hint"] in ["可做", "观察", "回避"]
+
+
+def test_calculate_score_weights():
+    engine = _make_engine()
+    report = {
+        "expert_outputs": {
+            "technical": {"decision_hint": "可做"},
+            "quant_flow": {"decision_hint": "观察"},
+            "fundamental": {"decision_hint": "回避"},
+            "risk": {"decision_hint": "观察"},
+        }
+    }
+    score = engine._calculate_score(report)
+    assert score["short_term"] == 67.5
+    assert score["fundamental"] == 30
+    assert score["risk"] == 55
+    assert score["total"] == round(67.5 * 0.40 + 30 * 0.35 + 55 * 0.25, 2)

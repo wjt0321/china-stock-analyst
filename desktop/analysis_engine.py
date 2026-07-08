@@ -2,7 +2,7 @@ import logging
 from typing import Any
 
 from desktop.config_manager import ConfigManager
-from scripts.technical_indicators import calc_full_indicators, indicators_to_dict
+from scripts.technical_indicators import calc_full_indicators
 
 LOGGER = logging.getLogger(__name__)
 
@@ -46,41 +46,39 @@ class AnalysisEngine:
         }
 
     def _technical_expert(self, validated_data: dict) -> dict:
-        candles = self._extract_candles(validated_data)
-        if candles:
-            indicators = calc_full_indicators(candles)
-            indicators = indicators_to_dict(indicators)
-            decision_hint = self._hint_from_indicators(indicators)
-            return {
-                "view": indicators.get("interpretation", "震荡"),
-                "decision_hint": decision_hint,
-                "evidences": [indicators],
-            }
-        return {"view": "震荡", "decision_hint": "观察", "evidences": []}
+        candles = validated_data.get("akshare_candles", {}).get("value", [])
+        if not candles or len(candles) < 20:
+            return {"view": "数据不足", "decision_hint": "观察", "evidences": ["K线数据不足"]}
 
-    def _extract_candles(self, validated_data: dict) -> list:
-        for key in ("akshare_candles", "candles"):
-            if key in validated_data:
-                value = validated_data[key]
-                if isinstance(value, dict):
-                    return value.get("value", []) or []
-                return value or []
-        for key, value in validated_data.items():
-            if "candles" in key:
-                if isinstance(value, dict):
-                    return value.get("value", []) or []
-                return value or []
-        return []
+        indicators = calc_full_indicators(candles)
+        price = validated_data.get("price", {}).get("value")
+        vwap_result = indicators.get("vwap")
+        vwap = vwap_result.vwap if vwap_result else None
+        rsi = indicators.get("rsi")
+        atr_result = indicators.get("atr")
+        atr = atr_result.atr if atr_result else None
 
-    def _hint_from_indicators(self, indicators: dict) -> str:
-        rsi = indicators.get("rsi", 50)
-        momentum = indicators.get("momentum", 0)
-        interpretation = indicators.get("interpretation", "")
-        if "偏多" in interpretation or "强劲" in interpretation or rsi > 60 or momentum > 5:
-            return "可做"
-        if "偏空" in interpretation or "疲弱" in interpretation or rsi < 40 or momentum < -5:
-            return "回避"
-        return "观察"
+        hints = []
+        if price and vwap:
+            deviation = (price - vwap) / vwap
+            if deviation > 0.02:
+                hints.append("价格高于 VWAP，短线偏强")
+            elif deviation < -0.02:
+                hints.append("价格低于 VWAP，短线偏弱")
+
+        decision = "观察"
+        if rsi is not None:
+            if rsi > 70:
+                decision = "回避"
+            elif rsi < 30:
+                decision = "可做"
+
+        return {
+            "view": "多头" if decision == "可做" else "空头" if decision == "回避" else "震荡",
+            "decision_hint": decision,
+            "indicators": {"vwap": vwap, "rsi": rsi, "atr": atr},
+            "evidences": hints,
+        }
 
     def _fundamental_expert(self, validated_data: dict) -> dict:
         return {"view": "中性", "decision_hint": "观察", "evidences": []}
@@ -107,7 +105,24 @@ class AnalysisEngine:
         return {"consensus": "观察", "conflict_items": []}
 
     def _calculate_score(self, report: dict) -> dict:
-        return {"short_term": 50, "fundamental": 50, "risk": 50, "total": 50}
+        cfg = self.cfg
+        technical_hint = report["expert_outputs"]["technical"]["decision_hint"]
+        quant_hint = report["expert_outputs"]["quant_flow"]["decision_hint"]
+
+        short_term = self._hint_to_score(technical_hint) * 0.5 + self._hint_to_score(quant_hint) * 0.5
+        fundamental = self._hint_to_score(report["expert_outputs"]["fundamental"]["decision_hint"])
+        risk = self._hint_to_score(report["expert_outputs"]["risk"]["decision_hint"])
+
+        total = (
+            short_term * cfg["short_term_weight"]
+            + fundamental * cfg["fundamental_weight"]
+            + risk * cfg["sentiment_weight"]
+        )
+        return {"short_term": short_term, "fundamental": fundamental, "risk": risk, "total": round(total, 2)}
+
+    def _hint_to_score(self, hint: str) -> float:
+        mapping = {"可做": 80, "观察": 55, "回避": 30, "数据不足": 50, "中性": 55}
+        return mapping.get(hint, 50)
 
     def _derive_verdict(self, report: dict) -> tuple[str, str]:
         total = report["scoring"]["total"]
