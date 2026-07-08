@@ -115,6 +115,36 @@ def test_service_handle_analyze_source_all_failed():
     assert result["request_id"] == "r9"
 
 
+def test_service_handle_settings_set_missing_key():
+    service = _make_service()
+    cmd = {"cmd": "settings", "action": "set", "value": ["akshare"], "request_id": "r11"}
+    result = service.handle(cmd)
+    assert result["status"] == "error"
+    assert result["error_code"] == "MISSING_KEY"
+    assert result["request_id"] == "r11"
+    service.config.set.assert_not_called()
+
+
+def test_service_handle_settings_set_missing_value():
+    service = _make_service()
+    cmd = {"cmd": "settings", "action": "set", "key": "source_priority", "request_id": "r12"}
+    result = service.handle(cmd)
+    assert result["status"] == "error"
+    assert result["error_code"] == "MISSING_KEY"
+    assert result["request_id"] == "r12"
+    service.config.set.assert_not_called()
+
+
+def test_service_handle_settings_invalid_action():
+    service = _make_service()
+    cmd = {"cmd": "settings", "action": "delete", "request_id": "r13"}
+    result = service.handle(cmd)
+    assert result["status"] == "error"
+    assert result["error_code"] == "INVALID_SETTINGS_ACTION"
+    assert "message" in result
+    assert result["request_id"] == "r13"
+
+
 def test_service_handle_analyze_with_llm_enhancement():
     service = _make_service()
     service.llm.enhance.return_value = "AI解读内容"

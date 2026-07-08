@@ -2,7 +2,6 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any
 
 from desktop.config_manager import ConfigManager
 from desktop.storage import Storage
@@ -92,9 +91,15 @@ class Service:
             }
             return {"status": "success", "data": value, "request_id": request_id}
         if action == "set":
-            self.config.set(cmd["key"], cmd["value"])
+            key = cmd.get("key")
+            value = cmd.get("value")
+            if key is None:
+                return {"status": "error", "error_code": "MISSING_KEY", "message": "Missing required 'key' for settings set", "request_id": request_id}
+            if value is None:
+                return {"status": "error", "error_code": "MISSING_KEY", "message": "Missing required 'value' for settings set", "request_id": request_id}
+            self.config.set(key, value)
             return {"status": "success", "request_id": request_id}
-        return {"status": "error", "error_code": "INVALID_SETTINGS_ACTION", "request_id": request_id}
+        return {"status": "error", "error_code": "INVALID_SETTINGS_ACTION", "message": f"Invalid settings action: {action}", "request_id": request_id}
 
 
 def main():
