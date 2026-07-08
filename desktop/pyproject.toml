@@ -15,3 +15,6 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "httpx>=0.24.0",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = [".."]
