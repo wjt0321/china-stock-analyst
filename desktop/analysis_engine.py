@@ -45,8 +45,34 @@ class AnalysisEngine:
             "event": self._event_expert(validated_data),
         }
 
+    def _pick_candles(self, validated_data: dict) -> tuple[list, str]:
+        """Return the best available OHLCV candles and the source name.
+
+        Preference follows config.source_priority; any source suffixed with
+        `_candles` is eligible.  This removes the hard dependency on AKShare
+        when lightweight HTTP K-line APIs (Sina/Tencent) are available.
+        """
+        priority = self.config.get_source_priority()
+        for source in priority:
+            key = f"{source}_candles"
+            field = validated_data.get(key)
+            if not field:
+                continue
+            candles = field.get("value", [])
+            if candles and len(candles) >= 20:
+                return candles, source
+
+        # Final fallback: any candles with enough history.
+        for key, field in validated_data.items():
+            if key.endswith("_candles"):
+                candles = field.get("value", [])
+                if candles and len(candles) >= 20:
+                    return candles, key.replace("_candles", "")
+
+        return [], ""
+
     def _technical_expert(self, validated_data: dict) -> dict:
-        candles = validated_data.get("akshare_candles", {}).get("value", [])
+        candles, source = self._pick_candles(validated_data)
         if not candles or len(candles) < 20:
             return {"view": "数据不足", "decision_hint": "观察", "evidences": ["K线数据不足"]}
 
@@ -72,6 +98,9 @@ class AnalysisEngine:
                 decision = "回避"
             elif rsi < 30:
                 decision = "可做"
+
+        if source:
+            hints.insert(0, f"K线来源: {source}")
 
         return {
             "view": "多头" if decision == "可做" else "空头" if decision == "回避" else "震荡",

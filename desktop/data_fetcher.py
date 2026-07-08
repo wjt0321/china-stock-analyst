@@ -3,6 +3,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from typing import Optional
 
+from desktop.data_apis import DataAPI
 from desktop.scrapling_adapters.base import BaseStockScraper
 from desktop.config_manager import ConfigManager
 from desktop.storage import Storage
@@ -16,10 +17,16 @@ OVERALL_FETCH_TIMEOUT_SECS = 90.0
 
 
 class DataFetcher:
-    def __init__(self, config: ConfigManager, storage: Storage):
+    def __init__(
+        self,
+        config: ConfigManager,
+        storage: Storage,
+        data_apis: Optional[list[DataAPI]] = None,
+    ):
         self.config = config
         self.storage = storage
         self.akshare = AKShareAdapter()
+        self.data_apis = data_apis or []
 
     def fetch(
         self,
@@ -56,7 +63,41 @@ class DataFetcher:
             LOGGER.error(f"AKShare fetch failed: {e}")
             self.storage.log_source("akshare", "failed", stock_code, str(e))
 
-        # Scrapling sources
+        # Lightweight HTTP data APIs (K-line, etc.)
+        for api in self.data_apis:
+            if not api.enabled:
+                continue
+            remaining = overall_deadline - time.monotonic()
+            if remaining <= 0.0:
+                LOGGER.warning(
+                    f"Overall fetch timeout reached; skipping {api.name} for {stock_code}"
+                )
+                self.storage.log_source(api.name, "timeout", stock_code)
+                continue
+
+            timeout = min(PER_SOURCE_TIMEOUT_SECS, remaining)
+            try:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(api.fetch_candles, stock_code)
+                    done, _ = wait([future], timeout=timeout)
+                    if future not in done:
+                        LOGGER.warning(f"{api.name} K-line fetch timed out for {stock_code}")
+                        self.storage.log_source(api.name, "timeout", stock_code)
+                        future.cancel()
+                        continue
+
+                    candles = future.result()
+                    if candles:
+                        result.setdefault(api.name, {})
+                        result[api.name]["candles"] = candles
+                        self.storage.log_source(api.name, "success", stock_code)
+                    else:
+                        self.storage.log_source(api.name, "failed", stock_code, "empty candles")
+            except Exception as e:
+                LOGGER.error(f"{api.name} K-line fetch failed: {e}")
+                self.storage.log_source(api.name, "failed", stock_code, str(e))
+
+        # Scrapling sources (real-time quotes)
         scrapers = scrapers or []
         with ThreadPoolExecutor(max_workers=4) as executor:
             future_to_scraper = {
@@ -86,11 +127,12 @@ class DataFetcher:
                         continue
 
                     quote = future.result()
-                    result[scraper.name] = {
+                    result.setdefault(scraper.name, {})
+                    result[scraper.name].update({
                         "price": quote.price,
                         "change": quote.change,
                         "turnover": quote.turnover,
-                    }
+                    })
                     self.storage.log_source(scraper.name, "success", stock_code)
                 except Exception as e:
                     LOGGER.error(f"{scraper.name} fetch failed: {e}")

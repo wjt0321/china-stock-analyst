@@ -14,6 +14,7 @@ import platform
 
 from desktop.config_manager import ConfigManager
 from desktop.storage import Storage
+from desktop.data_apis import get_default_data_apis
 from desktop.data_fetcher import DataFetcher
 from desktop.data_validator import DataValidator
 from desktop.analysis_engine import AnalysisEngine
@@ -144,7 +145,7 @@ def main():
     storage = Storage(db_path)
     storage.init_schema()
     config = ConfigManager(storage, defaults_path=base_dir / "config" / "settings.json")
-    fetcher = DataFetcher(config, storage)
+    fetcher = DataFetcher(config, storage, data_apis=get_default_data_apis())
     validator = DataValidator(config)
     engine = AnalysisEngine(config)
     renderer = ReportRenderer()

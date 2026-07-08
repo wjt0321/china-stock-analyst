@@ -65,6 +65,18 @@ def test_technical_expert_with_candles():
     assert report["expert_outputs"]["technical"]["decision_hint"] in ["可做", "观察", "回避"]
 
 
+def test_technical_expert_falls_back_to_non_akshare_candles():
+    engine = _make_engine()
+    candles = [
+        {"date": "2026-06-0%d" % i, "open": 9.0, "high": 10.0, "low": 8.5, "close": 9.5 + i * 0.1, "volume": 1000}
+        for i in range(1, 25)
+    ]
+    validated = {"price": {"value": 11.0}, "tencent_candles": {"value": candles}}
+    report = engine.analyze("600519", validated)
+    assert report["expert_outputs"]["technical"]["view"] != "数据不足"
+    assert "indicators" in report["expert_outputs"]["technical"]
+
+
 def test_calculate_score_weights():
     engine = _make_engine()
     report = {
