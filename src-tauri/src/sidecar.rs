@@ -1,9 +1,12 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, Write};
-use std::process::{Child, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager, State};
-use tauri_plugin_shell::ShellExt;
+
+/// Time to wait for a matching sidecar response before failing the request.
+const SIDECAR_RESPONSE_TIMEOUT_SECS: u64 = 180;
 
 pub struct SidecarState {
     pub stdin: Mutex<std::process::ChildStdin>,
@@ -13,22 +16,27 @@ pub struct SidecarState {
 }
 
 pub fn spawn_sidecar(app: &AppHandle) -> Result<(), String> {
-    let mut sidecar_command = app
-        .shell()
-        .sidecar("python")
-        .map_err(|e| e.to_string())?;
+    // The committed `python-x86_64-pc-windows-msvc.exe` is a placeholder and
+    // `.bat` files cannot be executed through Tauri's sidecar API. Spawn the
+    // batch launcher directly with `cmd /c` for the dev workflow.
+    let bat_path = app
+        .path()
+        .resolve("sidecars/python.bat", BaseDirectory::Resource)
+        .map_err(|e| format!("Failed to resolve sidecar batch path: {}", e))?;
+
+    let mut cmd = Command::new("cmd");
+    cmd.args(["/c", bat_path.to_string_lossy().as_ref()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     // Tell the Python service where to store application data and logs.
     // The service falls back to platform defaults when this is not set.
     if let Ok(app_data_dir) = app.path().app_data_dir() {
-        sidecar_command = sidecar_command.env("APP_DATA_DIR", app_data_dir);
+        cmd.env("APP_DATA_DIR", app_data_dir);
     }
 
-    let mut child = std::process::Command::from(sidecar_command)
-        .arg("desktop/service.py")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
 
@@ -108,7 +116,8 @@ pub fn send_command(state: State<'_, SidecarState>, command: String) -> Result<S
     }
 
     // Wait for a response line whose request_id matches the sent command.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(SIDECAR_RESPONSE_TIMEOUT_SECS);
     loop {
         if std::time::Instant::now() > deadline {
             return Err("Sidecar response timeout".to_string());

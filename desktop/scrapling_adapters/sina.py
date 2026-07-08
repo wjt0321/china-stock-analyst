@@ -23,6 +23,7 @@ class SinaScraper(BaseStockScraper):
             return QuoteSnapshot()
         url = f"https://finance.sina.com.cn/realstock/company/{_sina_symbol(stock_code)}/nc.shtml"
         try:
+            # Timeouts are enforced by DataFetcher at the orchestration level.
             page = self.fetcher.fetch(url, headless=True, network_idle=True)
             price_el = page.css_first("#price")
             return QuoteSnapshot(price=_to_float(price_el.text if price_el else None))

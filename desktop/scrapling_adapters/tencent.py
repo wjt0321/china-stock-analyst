@@ -24,6 +24,7 @@ class TencentScraper(BaseStockScraper):
         symbol = f"sh{stock_code}" if stock_code.startswith("6") else f"sz{stock_code}"
         url = f"https://qt.gtimg.cn/q={symbol}"
         try:
+            # Timeouts are enforced by DataFetcher at the orchestration level.
             page = self.fetcher.fetch(url, headless=True, network_idle=True)
             # Tencent quote API returns plain text; parse accordingly
             text = page.text or ""

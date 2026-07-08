@@ -45,6 +45,17 @@ class ConfigManager:
                 return {}
         return {}
 
+    @staticmethod
+    def _strip_api_key(config: dict) -> dict:
+        """Return a copy of the LLM config with the API key removed.
+
+        The API key must be supplied at runtime and is intentionally never
+        persisted to the local SQLite database.
+        """
+        sanitized = dict(config)
+        sanitized.pop("api_key", None)
+        return sanitized
+
     def _init_defaults(self) -> None:
         if self.storage.get_setting("source_priority") is None:
             self.storage.save_setting(
@@ -52,9 +63,13 @@ class ConfigManager:
                 self._defaults.get("source_priority", DEFAULT_SOURCE_PRIORITY),
             )
         if self.storage.get_setting("llm_config") is None:
+            llm_default = {
+                **DEFAULT_LLM_CONFIG,
+                **self._defaults.get("llm", {}),
+            }
             self.storage.save_setting(
                 "llm_config",
-                self._defaults.get("llm", DEFAULT_LLM_CONFIG),
+                self._strip_api_key(llm_default),
             )
         if self.storage.get_setting("analysis_config") is None:
             analysis = {
@@ -67,16 +82,22 @@ class ConfigManager:
             )
 
     def get(self, key: str, default: Any = None) -> Any:
-        return self.storage.get_setting(key, default)
+        value = self.storage.get_setting(key, default)
+        if key == "llm_config" and isinstance(value, dict):
+            return self._strip_api_key(value)
+        return value
 
     def set(self, key: str, value: Any) -> None:
+        if key == "llm_config" and isinstance(value, dict):
+            value = self._strip_api_key(value)
         self.storage.save_setting(key, value)
 
     def get_source_priority(self) -> list[str]:
         return self.storage.get_setting("source_priority", DEFAULT_SOURCE_PRIORITY)
 
     def get_llm_config(self) -> dict:
-        return self.storage.get_setting("llm_config", DEFAULT_LLM_CONFIG)
+        config = self.storage.get_setting("llm_config", DEFAULT_LLM_CONFIG)
+        return self._strip_api_key(config)
 
     def get_analysis_config(self) -> dict:
         return self.storage.get_setting("analysis_config", DEFAULT_ANALYSIS_CONFIG)

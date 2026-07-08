@@ -1,9 +1,16 @@
+from pathlib import Path
+import sys
+
+# Defensive sys.path insertion so this service can be launched from any CWD
+# (e.g. the Tauri binary directory) and still import `desktop.*` and `scripts.*`.
+_SERVICE_FILE = Path(__file__).resolve()
+_PROJECT_ROOT = _SERVICE_FILE.parent.parent
+sys.path.insert(0, str(_PROJECT_ROOT))
+
 import json
 import logging
 import os
 import platform
-import sys
-from pathlib import Path
 
 from desktop.config_manager import ConfigManager
 from desktop.storage import Storage

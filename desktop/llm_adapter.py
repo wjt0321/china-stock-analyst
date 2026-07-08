@@ -16,6 +16,8 @@ class LLMAdapter:
     def enhance(self, report_json: dict) -> str | None:
         if not self.cfg.get("enabled"):
             return None
+        # The API key is never persisted; it must be supplied at runtime.
+        # If it is missing, skip the LLM call entirely rather than erroring.
         api_key = self.cfg.get("api_key", "")
         if not api_key:
             return None

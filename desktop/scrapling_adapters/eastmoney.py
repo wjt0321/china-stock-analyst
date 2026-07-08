@@ -24,6 +24,7 @@ class EastmoneyScraper(BaseStockScraper):
             return QuoteSnapshot()
         url = f"https://quote.eastmoney.com/{stock_code}.html"
         try:
+            # Timeouts are enforced by DataFetcher at the orchestration level.
             page = self.fetcher.fetch(url, headless=True, network_idle=True)
             price_el = page.css_first(".price")
             change_el = page.css_first(".change")
