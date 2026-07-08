@@ -112,7 +112,7 @@ EASTMONEY_ENDPOINT_STOCK_SCREEN=/stock-screen
 Notes:
 
 - **The main workflow still runs without an API key**
-- The current primary path is **Web Search**
+- Local scraping via Scrapling is the primary data path
 - East Money is used for structured supplementation, key-field verification, and stock screening enhancement
 
 ---
@@ -126,13 +126,18 @@ During analysis, the same field is fetched from several sources and aligned by m
 
 | Source | Type | Primary Use |
 |:---|:---|:---|
+| [Scrapling](https://git.wxbfnnas.com/wxb/scrapling.git) | Local web scraping framework | Crawls public quote pages from East Money, Sina, Tencent, Hexun/10jqka |
 | [AKShare](https://www.akshare.xyz/) | Open-source Python financial data library | Historical K-lines, capital flow, fundamental data |
 | [East Money](https://www.eastmoney.com/) | Public market data | Real-time quotes, financial indicators verification |
 | [Sina Finance](https://finance.sina.com.cn/) | Public market data | Real-time quotes, K-line data |
 | [Tencent Finance](https://finance.qq.com/) | Public market data | Real-time quotes, K-line data |
 | [Hexun/10jqka](https://www.10jqka.com.cn/) | Public market data | Quotes and fundamental data |
 
-> 💡 **Acknowledgement**: The AKShare community provides a rich, free, and actively maintained A-share data interface, enabling individual developers to access high-quality financial data in a compliant way. Public market data is intended for learning and research only; please do not use it for high-frequency trading or commercial purposes.
+> 💡 **Acknowledgement**:
+> - [Scrapling](https://git.wxbfnnas.com/wxb/scrapling.git) provides a lightweight, extensible local web scraping capability, allowing the project to fetch public market data directly without relying on external search APIs, significantly improving data controllability and accuracy.
+> - The [AKShare](https://www.akshare.xyz/) community provides a rich, free, and actively maintained A-share data interface, enabling individual developers to access high-quality financial data in a compliant way.
+>
+> Public market data is intended for learning and research only; please do not use it for high-frequency trading or commercial purposes.
 
 > ⚠️ **Data Disclaimer**: All data comes from public interfaces or open-source libraries. The project does not guarantee real-time accuracy or completeness. Analysis results are for reference only and do not constitute investment advice.
 
