@@ -1,12 +1,13 @@
 {
+  "$schema": "./ui/node_modules/@tauri-apps/cli/config.schema.json",
   "identifier": "com.wxbfnnas.china-stock-analyst",
   "productName": "A股智能分析助手",
   "version": "0.1.0",
   "build": {
     "frontendDist": "./ui/dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeDevCommand": "cd ui && npm run dev",
+    "beforeBuildCommand": "cd ui && npm run build"
   },
   "app": {
     "windows": [
