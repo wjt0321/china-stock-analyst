@@ -38,3 +38,6 @@ Thumbs.db
 
 # 代码审核文件
 code_review_report.md
+
+# Isolated worktrees
+.worktrees/
