@@ -1,11 +1,10 @@
+import json
 import logging
-from desktop.scrapling_adapters.base import BaseStockScraper, QuoteSnapshot
+import re
 
-try:
-    from scrapling.fetchers import StealthyFetcher
-    _SCRAPLING_AVAILABLE = True
-except ImportError:
-    _SCRAPLING_AVAILABLE = False
+import requests
+
+from desktop.scrapling_adapters.base import BaseStockScraper, QuoteSnapshot
 
 LOGGER = logging.getLogger(__name__)
 
@@ -13,21 +12,50 @@ LOGGER = logging.getLogger(__name__)
 class ThsScraper(BaseStockScraper):
     name = "ths"
     priority = 3
-    enabled = True
+    # Disabled by default: its JSONP endpoint is unreliable outside trading hours
+    # and frequently returns empty/placeholder data.
+    enabled = False
 
-    def __init__(self):
-        self.fetcher = StealthyFetcher() if _SCRAPLING_AVAILABLE else None
+    def _symbol(self, stock_code: str) -> str:
+        return f"hs_{stock_code}"
 
     def fetch_quote(self, stock_code: str) -> QuoteSnapshot:
-        if not self.fetcher:
-            return QuoteSnapshot()
-        url = f"https://basic.10jqka.com.cn/{stock_code}"
+        symbol = self._symbol(stock_code)
+        url = f"http://d.10jqka.com.cn/v6/time/{symbol}/today"
         try:
-            # Timeouts are enforced by DataFetcher at the orchestration level.
-            page = self.fetcher.fetch(url, headless=True, network_idle=True)
-            price_els = page.css(".price")
-            price_el = price_els[0] if price_els else None
-            return QuoteSnapshot(price=_to_float(price_el.text if price_el else None))
+            resp = requests.get(
+                url,
+                timeout=15,
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Referer": "http://stockpage.10jqka.com.cn/",
+                },
+            )
+            resp.raise_for_status()
+            text = resp.text
+            # Strip JSONP wrapper: quotebridge_v6_time_hs_600519_today(...)
+            match = re.search(r"\((\{.*\})\)", text)
+            if not match:
+                return QuoteSnapshot()
+            data = json.loads(match.group(1)).get(symbol, {})
+            if not data:
+                return QuoteSnapshot()
+
+            price = _to_float(data.get("latest"))
+            prev = _to_float(data.get("pre"))
+            change = None
+            if price is not None and prev is not None and prev != 0:
+                change = price - prev
+
+            return QuoteSnapshot(
+                price=price,
+                change=change,
+                open=_to_float(data.get("open")),
+                high=_to_float(data.get("high")),
+                low=_to_float(data.get("low")),
+                volume=_to_float(data.get("totalVolume")),
+                turnover=_to_float(data.get("totalAmount")),
+            )
         except Exception as e:
             LOGGER.error(f"Ths fetch_quote failed: {e}")
             return QuoteSnapshot()

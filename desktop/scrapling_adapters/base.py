@@ -7,6 +7,10 @@ from typing import Optional
 class QuoteSnapshot:
     price: Optional[float] = None
     change: Optional[float] = None
+    open: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    volume: Optional[float] = None
     turnover: Optional[float] = None
     name: Optional[str] = None
     timestamp: Optional[str] = None

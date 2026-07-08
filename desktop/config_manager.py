@@ -8,7 +8,7 @@ from desktop.storage import Storage
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_SOURCE_PRIORITY = ["eastmoney", "sina", "ths", "tencent", "akshare"]
+DEFAULT_SOURCE_PRIORITY = ["sina", "tencent", "eastmoney", "akshare"]
 DEFAULT_LLM_CONFIG = {
     "enabled": False,
     "provider": "deepseek",

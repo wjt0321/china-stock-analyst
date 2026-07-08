@@ -11,7 +11,7 @@ def test_source_priority_default(tmp_path):
     storage.init_schema()
     cm = ConfigManager(storage, defaults_path=Path("nonexistent.json"))
     priority = cm.get_source_priority()
-    assert priority[0] == "eastmoney"
+    assert priority[0] == "sina"
 
 
 def test_llm_config_default(tmp_path):
