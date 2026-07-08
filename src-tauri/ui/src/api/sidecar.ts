@@ -26,3 +26,9 @@ export async function getWatchlist() {
 export async function getSettings() {
   return sendCommand({ cmd: "settings", action: "get", request_id: crypto.randomUUID() });
 }
+
+export async function getReports(stockCode?: string) {
+  const cmd: any = { cmd: "reports", request_id: crypto.randomUUID() };
+  if (stockCode) cmd.stock_code = stockCode;
+  return sendCommand(cmd);
+}

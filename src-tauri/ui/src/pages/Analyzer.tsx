@@ -1,5 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { analyzeStock } from "../api/sidecar";
+
+const LAST_RESULT_KEY = "china-stock-analyst:last-result";
 
 export default function Analyzer() {
   const [codes, setCodes] = useState("600519");
@@ -7,17 +9,30 @@ export default function Analyzer() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(LAST_RESULT_KEY);
+      if (saved) setResult(JSON.parse(saved));
+    } catch {
+      // ignore parse errors
+    }
+  }, []);
+
   const handleAnalyze = async () => {
     const list = codes.split(/[,，\s]+/).filter(Boolean);
     if (list.length === 0) return;
     setLoading(true);
     setError(null);
-    setResult(null);
     console.log("[Analyzer] starting analyze", list);
     try {
       const res = await analyzeStock(list, list.length > 1 ? "compare" : "single");
       console.log("[Analyzer] analyze result", res);
       setResult(res);
+      try {
+        localStorage.setItem(LAST_RESULT_KEY, JSON.stringify(res));
+      } catch {
+        // ignore storage errors
+      }
     } catch (e: any) {
       console.error("[Analyzer] analyze failed", e);
       setError(e?.message || String(e));
