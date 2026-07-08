@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** 扩展报告质量门禁，新增止损位、标签-分数一致性、风险-建议冲突三类校验，同时单独审查 SKILL.md 的冗长与失焦风险。
+**Goal:** 扩展报告质量门禁，新增止损位、标签-分数一致性、风险-建议冲突三类校验，同时单独审查 docs/archive/02-skill-entry-20260403.md 的冗长与失焦风险。
 
-**Architecture:** 保持现有 Markdown 门禁脚本的轻量方案，不引入新依赖，也不重做报告数据模型。本轮先通过测试定义三个新增规则的文本匹配行为，再以最小改动扩展 `report_quality_gate.py`，最后验证批量检查脚本仍可工作，并输出 SKILL.md 审查结论。
+**Architecture:** 保持现有 Markdown 门禁脚本的轻量方案，不引入新依赖，也不重做报告数据模型。本轮先通过测试定义三个新增规则的文本匹配行为，再以最小改动扩展 `report_quality_gate.py`，最后验证批量检查脚本仍可工作，并输出 docs/archive/02-skill-entry-20260403.md 审查结论。
 
 **Tech Stack:** Python 标准库、unittest
 
@@ -50,10 +50,10 @@
 
 ---
 
-### Task 3: 审查 SKILL.md 冗长度风险
+### Task 3: 审查 docs/archive/02-skill-entry-20260403.md 冗长度风险
 
 **Files:**
-- Review only: `SKILL.md`
+- Review only: `docs/archive/02-skill-entry-20260403.md`
 
 **Step 1: Read for structure**
 - 检查是否同时承担“产品说明 + 路由规则 + 细节实现 + 测试说明 + 迁移文档”过多职责

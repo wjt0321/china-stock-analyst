@@ -4,9 +4,11 @@
 
 ## 项目概述
 
-A股智能分析助手（china-stock-analyst）是一个 Claude Code 技能，用于 A 股短线交易分析。核心特点：「短线交易信号 + 营收质量」双轨研判体系，采用 Team-First 默认并行架构。
+A股智能分析助手（china-stock-analyst）是一个 A 股短线交易分析工具。核心特点：「短线交易信号 + 营收质量」双轨研判体系，采用 Team-First 默认并行架构。
 
-当前版本：**v3.1.0**
+当前项目以 **Tauri + Python Sidecar 桌面端** 为主要运行形态，同时保留原 Claude Code Skill 的核心脚本与专家定义作为后端分析能力。
+
+当前版本：**v3.2.0**
 
 ## 专家角色列表
 
@@ -96,7 +98,8 @@ class MyExpertPlugin(ExpertPlugin):
 
 ## 详细文档
 
-- `SKILL.md` - 技能完整文档
+- `README.md` - 项目说明与桌面端使用指南
 - `CLAUDE.md` - 开发者指南
+- `docs/archive/02-skill-entry-20260403.md` - 早期 Claude Code Skill 入口（已归档）
 - `docs/agent-teams-blueprint.md` - Agent Teams 编排蓝图
 - `docs/agent-json-schema-standard.md` - 专家 Agent 统一 JSON Schema 标准

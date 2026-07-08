@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { analyzeStock } from "../api/sidecar";
+import { analyzeStock, addWatchlist } from "../api/sidecar";
 import Markdown from "../components/Markdown";
 
 const LAST_RESULT_KEY = "china-stock-analyst:last-result";
@@ -43,6 +43,17 @@ export default function Analyzer() {
     }
   };
 
+  const handleAddWatchlist = async (item: any) => {
+    const code = item.stock_code;
+    const name = item.report_json?.expert_outputs?.fundamental?.indicators?.name || "";
+    try {
+      await addWatchlist(code, name);
+      alert(`已将 ${code} 加入自选`);
+    } catch (e: any) {
+      alert("加入自选失败：" + (e?.message || String(e)));
+    }
+  };
+
   const reports = result?.data || [];
 
   return (
@@ -71,6 +82,9 @@ export default function Analyzer() {
         <div style={{ flex: 1, overflow: "auto", border: "1px solid #ddd", borderRadius: 8, padding: 16 }}>
           {reports.map((item: any) => (
             <div key={item.stock_code} style={{ marginBottom: 32 }}>
+              <div style={{ marginBottom: 12 }}>
+                <button onClick={() => handleAddWatchlist(item)}>➕ 加入自选</button>
+              </div>
               <Markdown content={item.report_md} />
             </div>
           ))}

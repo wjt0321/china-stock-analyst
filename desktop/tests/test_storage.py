@@ -79,6 +79,27 @@ def test_save_and_get_setting(tmp_path):
     assert db.get_setting("missing") is None
 
 
+def test_delete_watchlist_item(tmp_path):
+    db = Storage(tmp_path / "test.db")
+    db.init_schema()
+    db.save_watchlist_item("600519", "贵州茅台")
+    db.save_watchlist_item("000001", "平安银行")
+    db.delete_watchlist_item("600519")
+    items = db.get_watchlist()
+    assert len(items) == 1
+    assert items[0]["stock_code"] == "000001"
+
+
+def test_delete_report(tmp_path):
+    db = Storage(tmp_path / "test.db")
+    db.init_schema()
+    db.save_report("600519", "single", "# Report", {})
+    report_id = db.save_report("000001", "single", "# Report 2", {})
+    db.delete_report(report_id)
+    reports = db.get_reports()
+    assert len(reports) == 1
+    assert reports[0]["stock_code"] == "600519"
+
 def test_log_source(tmp_path):
     db = Storage(tmp_path / "test.db")
     db.init_schema()

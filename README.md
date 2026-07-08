@@ -4,11 +4,11 @@
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
-![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-purple.svg)
-![Tests](https://img.shields.io/badge/Tests-130%20Passed-success.svg)
-![Version](https://img.shields.io/badge/Version-3.1.0-orange.svg)
+![Tauri](https://img.shields.io/badge/Tauri-2.0+-24C8D8.svg)
+![Tests](https://img.shields.io/badge/Tests-145%20Passed-success.svg)
+![Version](https://img.shields.io/badge/Version-3.2.0-orange.svg)
 
-**📈 A股短线交易分析助手 | Team-First 并行专家系统 | 插件化架构**
+**📈 A股短线交易分析助手 | Team-First 并行专家系统 | 插件化架构 | Tauri 桌面端**
 
 [核心特性](#-核心特性) • [快速开始](#-快速开始) • [功能模块](#-功能模块) • [更新日志](#-更新日志)
 
@@ -18,18 +18,23 @@
 
 ## 📖 简介
 
-> 一个专为 **Claude Code** 设计的 A 股分析技能，采用「**短线交易信号 + 营收质量**」双轨研判体系。
+> 一个 A 股短线分析工具，采用「**短线交易信号 + 营收质量**」双轨研判体系。
 
-当前版本已升级为 **v3.1.0**，具备完整的插件化架构、AKShare 数据源接入、回测框架、策略参数优化与归因分析能力。
+当前版本已升级为 **v3.2.0**，除了原有的 Claude Code Skill 能力，还新增了 **Tauri + Python Sidecar 桌面端**，
+支持在 Windows 上独立运行：输入股票代码即可生成结构化短线分析报告，并可将标的加入自选看板长期跟踪。
 
-### 与 Claude Code Skills 的适配度
+### 运行形态
 
-- **适配度结论：高**
-- **技能入口明确**：Claude Code 实际入口为 `SKILL.md`，README 主要承担安装、工程说明与发布说明
-- **运行形态合适**：`SKILL.md + Python 辅助脚本 + 回归测试` 的结构，符合 Claude Code Skills 的仓库形态
-- **迁移成本低**：核心脚本仅依赖 Python 标准库，路径以相对路径和 `Path(__file__)` 为主
+| 形态 | 入口 | 说明 |
+|:---:|:---|:---|
+| 💻 桌面端 | [`src-tauri/`](./src-tauri) + [`desktop/`](./desktop) | Tauri 2 + React + Python Sidecar，优先支持 Windows |
+| 🤖 Claude Code Skill | 已归档至 [`docs/archive/02-skill-entry-20260403.md`](./docs/archive/02-skill-entry-20260403.md) | 早期以 Skill 方式运行，现由桌面端承载主要交互 |
+
+### 核心适配度
+
 - **质量约束完整**：具备数据真实性审计、采集质量门禁、身份校验、报告后置质量检查
 - **插件化扩展**：支持自定义专家插件，动态发现与加载
+- **多源交叉验证**：同时接入多个数据源，取多数一致值，降低单点错误风险
 
 ---
 
@@ -37,11 +42,12 @@
 
 | 特性 | 说明 |
 |:---:|:---|
+| 💻 **桌面端应用** | Tauri 2 + React 前端 + Python Sidecar，独立窗口运行，支持分析/看板/报告/设置 |
 | 👥 **8位专家协同** | 基本面大师 / 技术分析派 / 量化模型师 / 风险控制官 / 宏观策略师 / 行业研究家 / 消息面猎手 / 专家鉴别Agent |
 | 🧭 **Team-First 默认并行** | 默认进入 `agent_team`，复杂任务强制 `full_parallel`，不再以 `single_flow` 作为主流程 |
 | 🛡️ **数据真实性审计前置** | `run_data_auditor` 在所有分析前执行，校验日期回退、时间戳冲突、来源类别充分性 |
 | 🔌 **插件化架构** | 支持 `ExpertPlugin` / `FilterPlugin` / `TransformPlugin` 三类插件，动态发现与加载 |
-| 📊 **AKShare 数据源** | 接入 AKShare 免费数据源，支持历史K线、资金流向、新闻资讯等 |
+| 📊 **多源交叉验证** | 同时接入东方财富、新浪财经、腾讯财经、同花顺、AKShare 等数据源，取多数一致值 |
 | 🔄 **回测框架** | 内置回测引擎，支持信号生成、绩效指标计算、Markdown 报告输出 |
 | 🎯 **策略参数优化** | Grid Search 自动寻优，支持评分权重、止损止盈参数优化 |
 | 📈 **归因分析** | 分析策略盈亏因素，计算市场/交易/风险/胜率因子贡献度 |
@@ -52,28 +58,43 @@
 
 ## 🚀 快速开始
 
-### 安装
+### 桌面端（推荐）
 
 ```bash
 git clone https://github.com/wjt0321/china-stock-analyst.git
 cd china-stock-analyst
+
+# 安装 Python 依赖
 pip install -r requirements.txt
+
+# 安装前端依赖
+cd src-tauri/ui && npm install
+cd ../..
+
+# 启动开发模式
+npx --prefix src-tauri/ui tauri dev
 ```
 
-将项目复制到 Claude Code 技能目录：
+首次启动会编译 Rust 端，请耐心等待窗口弹出。
 
-| 系统 | 路径 |
-|:---|:---|
-| 🪟 Windows | `%USERPROFILE%\.claude\skills\china-stock-analyst` |
-| 🍎 macOS / 🐧 Linux | `~/.claude/skills/china-stock-analyst` |
+### 原 Claude Code Skill 形态（已归档）
+
+早期以 Claude Code Skill 方式运行，相关入口与说明已归档至 [`docs/archive/`](./docs/archive/)。
+如仍需 Skill 形态，可参考：
+- 技能定义：`docs/archive/02-skill-entry-20260403.md`
+- 改进记录：`docs/archive/04-improvement-report-20260403.md`
 
 ### 验证安装
 
 ```bash
+# 核心回归测试
 python -m pytest tests/test_stock_skill.py -v
+
+# 桌面端测试
+python -m pytest desktop/tests -v
 ```
 
-当前测试结果：**130 个用例全部通过** ✅
+当前测试结果：**145 项核心测试 + 62 项桌面端测试全部通过** ✅
 
 ### 配置（可选）
 
@@ -238,13 +259,22 @@ run_data_auditor
 
 ```text
 china-stock-analyst/
-├── SKILL.md                    # Claude Code 技能主入口
-├── README.md                   # 项目说明
+├── README.md                   # 项目说明（本文件）
 ├── CLAUDE.md                   # 开发者指南
 ├── requirements.txt            # Python 依赖
 ├── config/
 │   └── settings.json           # 外置配置
-├── scripts/
+├── desktop/                    # Python Sidecar 服务
+│   ├── service.py              # Sidecar 主服务
+│   ├── storage.py              # SQLite 持久化
+│   ├── data_fetcher.py         # 多源数据获取
+│   ├── analysis_engine.py      # 分析引擎
+│   ├── report_renderer.py      # Markdown 报告渲染
+│   └── scrapling_adapters/     # Scrapling 数据源适配器
+├── src-tauri/                  # Tauri 桌面端
+│   ├── ui/                     # React + Vite 前端
+│   └── src/                    # Rust 宿主代码
+├── scripts/                    # 原 Skill 核心脚本
 │   ├── team_router.py          # 团队路由
 │   ├── generate_report.py      # 报告生成
 │   ├── stock_utils.py          # 工具函数
@@ -263,10 +293,12 @@ china-stock-analyst/
 │       ├── technical_indicators_plugin.py
 │       └── fund_flow_plugin.py
 ├── agents/                     # 专家定义
-├── tests/
-│   ├── test_stock_skill.py     # 主测试
-│   └── test_integration.py     # 集成测试
+├── tests/                      # 回归测试
+├── stock-reports/              # 生成的 Markdown 报告
 ├── docs/
+│   ├── archive/                # 历史文档归档（编号 01-06）
+│   ├── plans/                  # 实施计划
+│   ├── superpowers/            # 设计规格
 │   └── WINDOWS_SETUP.md        # Windows 配置指南
 └── assets/
     └── 报告模板.md
@@ -277,7 +309,7 @@ china-stock-analyst/
 ## 🧪 运行测试
 
 ```bash
-# 运行所有测试
+# 运行核心回归测试
 python -m pytest tests/ -v
 
 # 运行主测试
@@ -285,6 +317,9 @@ python -m pytest tests/test_stock_skill.py -v
 
 # 运行集成测试
 python -m pytest tests/test_integration.py -v
+
+# 运行桌面端测试
+python -m pytest desktop/tests -v
 ```
 
 测试覆盖：
@@ -294,7 +329,8 @@ python -m pytest tests/test_integration.py -v
 - 回测框架与绩效指标
 - 插件系统加载与执行
 - 策略优化与归因分析
-- **当前回归测试总量：130 项（全部通过）**
+- 桌面端持久化与 Sidecar 命令
+- **当前回归测试总量：145 项核心测试 + 62 项桌面端测试（全部通过）**
 
 ---
 
@@ -304,18 +340,34 @@ python -m pytest tests/test_integration.py -v
 
 ---
 
-## 桌面端
+## 💻 桌面端
 
-项目已支持 Tauri + Python Sidecar 桌面端，详见：
-- 设计文档：`docs/superpowers/specs/2026-07-08-desktop-app-design.md`
-- 实施计划：`docs/superpowers/plans/2026-07-08-desktop-app-implementation-plan.md`
+项目已支持 **Tauri 2 + Python Sidecar** 桌面端，作为当前主推形态。
+
+### 已具备的能力（MVP）
+
+| 模块 | 功能 |
+|:---|:---|
+| 分析向导 | 输入股票代码，多源采集后生成结构化短线分析报告 |
+| 自选股看板 | 在分析页点击「加入自选」添加，支持一键重新分析 |
+| 报告列表 | 按标题展示历史报告，支持删除，点击标题查看正文 |
+| 设置 | 数据源优先级、LLM 配置、分析参数（持续完善） |
 
 ### 开发运行
 
 ```bash
-cd src-tauri/ui && npm install && npm run dev
-cd desktop && pip install -e ".[dev]"
+# 1. 安装前端依赖
+cd src-tauri/ui && npm install
+
+# 2. 安装 Python 依赖（项目根目录）
+cd ../..
+pip install -r requirements.txt
+
+# 3. 启动 Tauri 开发模式
+npx --prefix src-tauri/ui tauri dev
 ```
+
+首次启动会编译 Rust 端，可能需要 1-3 分钟。
 
 ### 打包
 
@@ -324,9 +376,46 @@ python scripts/build_sidecar.py
 cd src-tauri && cargo tauri build
 ```
 
+### 相关文档
+
+- 设计文档：`docs/superpowers/specs/2026-07-08-desktop-app-design.md`
+- 实施计划：`docs/superpowers/plans/2026-07-08-desktop-app-implementation-plan.md`
+
+---
+
+## 🌐 数据来源与致谢
+
+本项目坚持「**多源交叉验证，免费合规优先**」原则。分析时会从多个数据源获取同一字段，
+通过多数一致机制降低单点错误风险。当前接入的数据源包括：
+
+| 数据源 | 类型 | 主要用途 |
+|:---|:---|:---|
+| [AKShare](https://www.akshare.xyz/) | 开源 Python 金融数据接口 | 历史K线、资金流向、基本面数据 |
+| [东方财富](https://www.eastmoney.com/) | 公开市场数据 | 实时行情、财务指标复核 |
+| [新浪财经](https://finance.sina.com.cn/) | 公开市场数据 | 实时行情、K线数据 |
+| [腾讯财经](https://finance.qq.com/) | 公开市场数据 | 实时行情、K线数据 |
+| [同花顺](https://www.10jqka.com.cn/) | 公开市场数据 | 行情与基本面数据 |
+
+> 💡 **特别感谢**：AKShare 社区提供了丰富、免费且持续维护的 A 股数据接口，
+> 让个人开发者也能以合规方式获取高质量金融数据。公开市场数据仅供学习研究，
+> 请勿用于高频交易或商业用途。
+
+> ⚠️ **数据声明**：所有数据源均来自公开接口或开源库，项目不保证数据实时性与完整性。
+> 分析结果仅供参考，不构成投资建议。
+
 ---
 
 ## 📅 更新日志
+
+### v3.2.0 (2026-07-08)
+
+- **桌面端 MVP**：
+  - 新增 Tauri 2 + React + Python Sidecar 桌面端
+  - 支持分析向导、自选股看板、报告列表、报告删除
+  - 看板最近报告以标题展示，点击可跳转查看
+- **历史文档归档**：
+  - 将 SKILL.md、审查报告、改进报告等 6 份历史资料归档至 `docs/archive/`
+  - README 新增数据来源致谢与桌面端使用说明
 
 ### v3.1.0 (2026-05-01)
 

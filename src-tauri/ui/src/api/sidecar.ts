@@ -20,7 +20,26 @@ export async function analyzeStock(codes: string[], mode: string = "single") {
 }
 
 export async function getWatchlist() {
-  return sendCommand({ cmd: "watchlist", request_id: crypto.randomUUID() });
+  return sendCommand({ cmd: "watchlist", action: "get", request_id: crypto.randomUUID() });
+}
+
+export async function addWatchlist(stockCode: string, stockName: string = "") {
+  return sendCommand({
+    cmd: "watchlist",
+    action: "add",
+    stock_code: stockCode,
+    stock_name: stockName,
+    request_id: crypto.randomUUID(),
+  });
+}
+
+export async function removeWatchlist(stockCode: string) {
+  return sendCommand({
+    cmd: "watchlist",
+    action: "remove",
+    stock_code: stockCode,
+    request_id: crypto.randomUUID(),
+  });
 }
 
 export async function getSettings() {
@@ -28,7 +47,19 @@ export async function getSettings() {
 }
 
 export async function getReports(stockCode?: string) {
-  const cmd: any = { cmd: "reports", request_id: crypto.randomUUID() };
-  if (stockCode) cmd.stock_code = stockCode;
-  return sendCommand(cmd);
+  return sendCommand({
+    cmd: "reports",
+    action: "get",
+    stock_code: stockCode,
+    request_id: crypto.randomUUID(),
+  });
+}
+
+export async function deleteReport(reportId: number) {
+  return sendCommand({
+    cmd: "reports",
+    action: "delete",
+    report_id: reportId,
+    request_id: crypto.randomUUID(),
+  });
 }

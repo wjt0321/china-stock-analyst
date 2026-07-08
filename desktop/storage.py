@@ -72,6 +72,10 @@ class Storage:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def delete_watchlist_item(self, stock_code: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM watchlist WHERE stock_code = ?", (stock_code,))
+
     def save_raw_data(
         self,
         stock_code: str,
@@ -130,6 +134,10 @@ class Storage:
                     "SELECT * FROM reports ORDER BY created_at DESC"
                 ).fetchall()
             return [dict(row) for row in rows]
+
+    def delete_report(self, report_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM reports WHERE id = ?", (report_id,))
 
     def save_setting(self, key: str, value: Any) -> None:
         with self._connect() as conn:

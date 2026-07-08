@@ -2,6 +2,14 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { getWatchlist, getReports, analyzeStock } from "../api/sidecar";
 
+function parseReportTitle(md: string): string {
+  const match = md.match(/^title:\s*(.+)$/m);
+  if (match) return match[1].trim();
+  const heading = md.match(/^#\s+(.+)$/m);
+  if (heading) return heading[1].trim();
+  return "分析报告";
+}
+
 export default function Dashboard() {
   const [watchlist, setWatchlist] = useState<any[]>([]);
   const [reports, setReports] = useState<any[]>([]);
@@ -55,8 +63,11 @@ export default function Dashboard() {
           {reports.map((r) => (
             <li key={r.id || `${r.stock_code}-${r.created_at}`}>
               <Link to="/reports" state={{ report: r }}>
-                {r.stock_code} - {r.created_at}
+                {parseReportTitle(r.report_md)}
               </Link>
+              <span style={{ color: "#888", marginLeft: 8, fontSize: 12 }}>
+                {r.created_at?.replace("T", " ")?.slice(0, 19)}
+              </span>
             </li>
           ))}
         </ul>

@@ -2,19 +2,19 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** 先强压缩重构 `SKILL.md`，再补强 `report_quality_gate.py` 的防漏检能力，同时保持现有主路径与 CLI 行为不变。
+**Goal:** 先强压缩重构 `docs/archive/02-skill-entry-20260403.md`，再补强 `report_quality_gate.py` 的防漏检能力，同时保持现有主路径与 CLI 行为不变。
 
-**Architecture:** `SKILL.md` 只保留主规则、主流程、数据源原则和输出要求，冗长示例与实现细节下沉到其他文档。`report_quality_gate.py` 继续保持轻量 Markdown 检查器定位，通过测试补充章节缺失、标题变体和候选表缺失等稳健性场景。
+**Architecture:** `docs/archive/02-skill-entry-20260403.md` 只保留主规则、主流程、数据源原则和输出要求，冗长示例与实现细节下沉到其他文档。`report_quality_gate.py` 继续保持轻量 Markdown 检查器定位，通过测试补充章节缺失、标题变体和候选表缺失等稳健性场景。
 
 **Tech Stack:** Markdown、Python 标准库、unittest
 
 ---
 
-### Task 1: 备份并重构 SKILL.md
+### Task 1: 备份并重构 docs/archive/02-skill-entry-20260403.md
 
 **Files:**
-- Create: `SKILL.backup-20260403.before-b1.md`
-- Modify: `SKILL.md`
+- Create: `docs/archive/01-skill-backup-before-b1-20260403.md`
+- Modify: `docs/archive/02-skill-entry-20260403.md`
 
 **Step 1: 备份原文**
 - 创建完整备份文件，保留改写前全文。

@@ -35,7 +35,7 @@
 ### Task 2: 执行 B4
 
 **Files:**
-- Create: `docs/REPORT_QUALITY_REPAIR_CHECKLIST_20260403.md`
+- Create: `docs/archive/06-report-quality-repair-checklist-20260403.md`
 
 **Step 1: 运行质量检查**
 - 对 `stock-reports/*.md` 执行批量检查。

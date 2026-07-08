@@ -13,7 +13,7 @@
 ### Task 1: 审查 Claude Code Skills 适配度
 
 **Files:**
-- Read: `SKILL.md`
+- Read: `docs/archive/02-skill-entry-20260403.md`
 - Read: `README.md`
 - Read: `README_EN.md`
 - Read: `scripts/team_router.py`

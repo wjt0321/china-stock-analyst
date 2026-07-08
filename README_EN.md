@@ -4,10 +4,10 @@
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
-![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-purple.svg)
+![Tauri](https://img.shields.io/badge/Tauri-2.0+-24C8D8.svg)
 ![Tests](https://img.shields.io/badge/Tests-145%20Passed-success.svg)
 
-**A-Share Short-term Trading Analysis Assistant | Team-First Parallel Expert System**
+**A-Share Short-term Trading Analysis Assistant | Team-First Parallel Expert System | Tauri Desktop App**
 
 [Core Features](#-core-features) • [Quick Start](#-quick-start) • [Execution Flow](#-execution-flow) • [Report Capabilities](#-report-capabilities) • [Changelog](#-changelog)
 
@@ -17,18 +17,22 @@
 
 ## Overview
 
-> A specialized A-share analysis skill designed for **Claude Code**, featuring a **"Short-term Trading Signals + Revenue Quality"** dual-track assessment system.
+> An A-share short-term analysis tool featuring a **"Short-term Trading Signals + Revenue Quality"** dual-track assessment system.
 
-The current version has been upgraded to a **Team-First** architecture: default parallel expert collaboration, front-loaded data authenticity audit, enhanced automatic activation for complex instructions with non-interrupting execution, and now uses a **Web Search primary path + East Money structured verification** model.
+The current version is **v3.2.0**. In addition to the original Claude Code Skill capabilities, the project now ships a **Tauri 2 + Python Sidecar desktop app** that runs independently on Windows: enter a stock code, get a structured short-term analysis report, and add tickers to a watchlist for ongoing tracking.
 
-### Claude Code Skills Compatibility
+### Runtime Modes
 
-- **Overall fit: high**
-- **Clear entrypoint**: `SKILL.md` is the actual Claude Code skill entry, while the README serves as install, engineering, and release documentation
-- **Good repository shape for Skills**: `SKILL.md + Python helper scripts + regression tests`
-- **Portable by design**: core scripts rely on Python standard library and relative paths
+| Mode | Entry | Description |
+|:---:|:---|:---|
+| **Desktop App** | [`src-tauri/`](./src-tauri) + [`desktop/`](./desktop) | Tauri 2 + React frontend + Python Sidecar; primary supported platform is Windows |
+| **Claude Code Skill** | Archived at [`docs/archive/02-skill-entry-20260403.md`](./docs/archive/02-skill-entry-20260403.md) | Earlier skill-based runtime; now superseded by the desktop app |
+
+### Key Properties
+
 - **Strong guardrails**: authenticity audit, collection-quality gate, identity checks, and report post-checks are all implemented
-- **Operational note**: this repository is not a standalone web service; scripts and tests are intended to run from the repository root
+- **Multi-source cross-validation**: data is fetched from several public sources and aligned by majority consistency to reduce single-source errors
+- **Plugin-ready**: supports custom expert plugins with dynamic discovery and loading
 
 ---
 
@@ -36,6 +40,7 @@ The current version has been upgraded to a **Team-First** architecture: default 
 
 | Feature | Description |
 |:---:|:---|
+| **Desktop App** | Tauri 2 + React frontend + Python Sidecar; runs in a standalone window on Windows with analysis, watchlist, reports, and settings |
 | **8 Expert Collaboration** | Fundamental Analyst / Technical Analyst / Quantitative Modeler / Risk Controller / Macro Strategist / Industry Researcher / Event Hunter / Expert Identifier Agent |
 | **Team-First Default Parallel** | Defaults to `agent_team` mode, complex tasks enforce `full_parallel`, no longer using `single_flow` as main workflow |
 | **Front-loaded Data Authenticity Audit** | `run_data_auditor` executes before all analysis, validating date rollback, timestamp conflicts, and source category sufficiency |
@@ -44,8 +49,8 @@ The current version has been upgraded to a **Team-First** architecture: default 
 | **Supervisor Conflict Arbitration** | Downgrades recommendations when industry signals conflict with event impacts, outputs "Actionable / Watch / Avoid" upper limits with reasons |
 | **Traceable Evidence Chain** | Each key conclusion includes conclusion value, source URL, minute-level timestamp, and adoption/rejection basis |
 | **Complex Instruction Continuity Guard** | Parallel nodes support isolated retry and aggregation, never falling back to single-line flow due to local issues |
-| **Dual-path Data Strategy** | Build candidates from Web Search first, then verify key fields via East Money to balance quota and accuracy |
-| **East Money Free API Integration** | Three new external capabilities: `news-search / query / stock-screen`, enhancing news, structured financial data, and stock screening credibility |
+| **Multi-Source Cross-Validation** | Fetches from East Money, Sina, Tencent, Hexun/10jqka, and AKShare; aligns by majority consistency to reduce single-source errors |
+| **East Money Free API Integration** | Three external capabilities: `news-search / query / stock-screen`, enhancing news, structured financial data, and stock screening credibility |
 | **Secure Key Loading** | Supports `EASTMONEY_APIKEY` environment variable priority, fallback to project `.env.local/.env`, ignored by default in commits |
 | **Free Quota Management** | Built-in 50 requests/day quota control, critical gating, cache deduplication, and empty result guidance to prioritize key data queries |
 
@@ -53,26 +58,40 @@ The current version has been upgraded to a **Team-First** architecture: default 
 
 ## Quick Start
 
-### Installation
+### Desktop App (Recommended)
 
 ```bash
 git clone https://github.com/wjt0321/china-stock-analyst.git
+cd china-stock-analyst
+
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Install frontend dependencies
+cd src-tauri/ui && npm install
+cd ../..
+
+# Start Tauri dev mode
+npx --prefix src-tauri/ui tauri dev
 ```
 
-Copy the project to Claude Code skills directory:
+The first launch compiles the Rust host and spawns the Python sidecar; this may take 1-3 minutes.
 
-| System | Path |
-|:---|:---|
-| Windows | `%USERPROFILE%\.claude\skills\china-stock-analyst` |
-| macOS / Linux | `~/.claude/skills/china-stock-analyst` |
+### Original Claude Code Skill (Archived)
+
+The earlier skill-based runtime is archived in [`docs/archive/`](./docs/archive/).
 
 ### Verify Installation
 
 ```bash
+# Core regression tests
 python -m unittest tests/test_stock_skill.py -v
+
+# Desktop tests
+python -m pytest desktop/tests -v
 ```
 
-Current test results: **145 test cases all passed**
+Current test results: **145 core tests + 62 desktop tests all passed**
 
 ### East Money API Configuration (Optional Enhancement)
 
@@ -98,44 +117,30 @@ Notes:
 
 ---
 
-## Data Integration Details (v2.4.3)
+## Data Sources & Attribution
 
-### Why this integration
+This project follows a **multi-source cross-validation, free-and-compliant-first** principle.
+During analysis, the same field is fetched from several sources and aligned by majority consistency to reduce single-source errors.
 
-- Fix recurring mismatches between stock code, stock name, and price
-- Reduce weak-web-source noise and model-side free completion
-- Enforce a hard “validate-before-analyze” gate
+### Current Data Sources
 
-### Integration strategy
+| Source | Type | Primary Use |
+|:---|:---|:---|
+| [AKShare](https://www.akshare.xyz/) | Open-source Python financial data library | Historical K-lines, capital flow, fundamental data |
+| [East Money](https://www.eastmoney.com/) | Public market data | Real-time quotes, financial indicators verification |
+| [Sina Finance](https://finance.sina.com.cn/) | Public market data | Real-time quotes, K-line data |
+| [Tencent Finance](https://finance.qq.com/) | Public market data | Real-time quotes, K-line data |
+| [Hexun/10jqka](https://www.10jqka.com.cn/) | Public market data | Quotes and fundamental data |
 
-- **Primary source switch**: key fields are built from Web Search candidates, then verified by East Money query
-- **Source priority**: `web_search > eastmoney_query`
-- **Responsibility split**: Web Search for coverage/candidates, East Money for structured key-field verification
-- **Fallback behavior**: when East Money verification is unavailable, mark result as "not structurally verified" instead of fabricating validated values
+> 💡 **Acknowledgement**: The AKShare community provides a rich, free, and actively maintained A-share data interface, enabling individual developers to access high-quality financial data in a compliant way. Public market data is intended for learning and research only; please do not use it for high-frequency trading or commercial purposes.
 
-### Implementation highlights
+> ⚠️ **Data Disclaimer**: All data comes from public interfaces or open-source libraries. The project does not guarantee real-time accuracy or completeness. Analysis results are for reference only and do not constitute investment advice.
 
-- `scripts/stock_utils.py`
-  - Added dual-path field alignment and data quality summary
-  - Added standardized output fields (`symbol/name/price/trade_date`)
-  - Added unified error codes (empty result, invalid arguments, API failure)
-- `scripts/generate_report.py`
-  - Added identity consistency, price validity, and trading-day timeliness gates
-  - Any failure blocks downstream conclusion and returns structured repair guidance
-- `scripts/team_router.py`
-  - Added symbol metadata passthrough (source function, fetched timestamp, validation conclusion, reason codes)
-  - Unified reason codes and user-facing tips
-- `scripts/report_quality_gate.py`
-  - Added stop-loss, score-label consistency, and risk-vs-recommendation checks
-  - Hardened detection for template variants, missing candidate tables, and missing recommendation blocks
-- `scripts/run_report_quality_checks.py`
-  - Added aggregated rule summary, severity summary, and repair suggestions
-  - Produces structured output that can be turned into a repair checklist for historical reports
+### Data Integration Highlights
 
-### Report-level changes
-
-- Enhanced “Data Authenticity Verification” and “Data Source Metadata”
-- Added source function, fetched timestamp, validation result, reason codes, and repair suggestions
+- **Validate-before-analyze**: hard gates for code-name consistency, price validity, and trading-day timeliness
+- **Source majority alignment**: key fields are cross-checked across sources; conflicts are flagged rather than silently resolved
+- **Graceful fallback**: when a source is unavailable, the system continues with available sources and marks the gap explicitly
 
 ---
 
@@ -240,11 +245,25 @@ Generated reports include the following key modules:
 
 ```text
 china-stock-analyst/
-├── SKILL.md
 ├── README.md
-├── LICENSE
 ├── README_EN.md
-├── scripts/
+├── LICENSE
+├── CLAUDE.md
+├── requirements.txt
+├── config/
+│   └── settings.json
+├── desktop/                    # Python Sidecar service
+│   ├── service.py
+│   ├── storage.py
+│   ├── data_fetcher.py
+│   ├── analysis_engine.py
+│   ├── report_renderer.py
+│   ├── scrapling_adapters/
+│   └── tests/
+├── src-tauri/                  # Tauri desktop app
+│   ├── ui/                     # React + Vite frontend
+│   └── src/                    # Rust host code
+├── scripts/                    # Original Skill core scripts
 │   ├── team_router.py
 │   ├── generate_report.py
 │   ├── stock_utils.py
@@ -262,15 +281,22 @@ china-stock-analyst/
 │   ├── stock-event-hunter.md
 │   └── stock-identity-auditor.md
 ├── tests/
-│   └── test_stock_skill.py
+│   ├── test_stock_skill.py
+│   └── test_integration.py
+├── plugins/
+│   └── expert/
+├── stock-reports/
 ├── assets/
 │   └── report_template.md
 ├── references/
 │   └── valuation_model_guide.md
 └── docs/
+    ├── archive/                # Historical docs (numbered 01-06)
     ├── agent-teams-blueprint.md
-    ├── REPORT_QUALITY_REPAIR_CHECKLIST_20260403.md
-    └── plans/
+    ├── agent-json-schema-standard.md
+    ├── plans/
+    ├── superpowers/
+    └── WINDOWS_SETUP.md
 ```
 
 ---
@@ -278,7 +304,11 @@ china-stock-analyst/
 ## Running Tests
 
 ```bash
+# Core regression tests
 python -m unittest tests/test_stock_skill.py -v
+
+# Desktop tests
+python -m pytest desktop/tests -v
 ```
 
 Test coverage includes:
@@ -289,7 +319,8 @@ Test coverage includes:
 - New experts and supervisor arbitration
 - Report quality gates, batch quality checks, and repair suggestion aggregation
 - Complex request end-to-end closed-loop verification
-- Current regression test total: **145 items (all passed)**
+- Desktop persistence and Sidecar commands
+- Current regression test total: **145 core tests + 62 desktop tests (all passed)**
 
 Common quality-check commands:
 
@@ -306,7 +337,51 @@ This project is licensed under the **MIT License**. See [LICENSE](LICENSE) for d
 
 ---
 
+## Desktop App
+
+The project now ships a **Tauri 2 + Python Sidecar** desktop app as the primary runtime.
+
+### MVP Capabilities
+
+| Module | Feature |
+|:---|:---|
+| Analysis Wizard | Enter a stock code; multi-source data collection generates a structured short-term analysis report |
+| Watchlist Dashboard | Add from the analysis page; supports one-click re-analysis |
+| Report List | View historical reports by title, delete reports, click title to view full report |
+| Settings | Data source priority, LLM config, analysis parameters (ongoing) |
+
+### Development
+
+```bash
+# Install frontend dependencies
+cd src-tauri/ui && npm install
+cd ../..
+
+# Start Tauri dev mode
+npx --prefix src-tauri/ui tauri dev
+```
+
+### Build
+
+```bash
+python scripts/build_sidecar.py
+cd src-tauri && cargo tauri build
+```
+
+- Design doc: `docs/superpowers/specs/2026-07-08-desktop-app-design.md`
+- Implementation plan: `docs/superpowers/plans/2026-07-08-desktop-app-implementation-plan.md`
+
 ## Changelog
+
+### v3.2.0 (2026-07-08)
+
+- **Desktop MVP**:
+  - Added Tauri 2 + React + Python Sidecar desktop app
+  - Analysis wizard, watchlist dashboard, report list, report deletion
+  - Dashboard recent reports now display titles; clicking opens the report
+- **Historical Documentation Archive**:
+  - Archived `SKILL.md`, review reports, improvement reports, and other historical materials to `docs/archive/`
+  - README now includes data source acknowledgements and desktop usage instructions
 
 ### v2.4.3 (2026-04-03)
 

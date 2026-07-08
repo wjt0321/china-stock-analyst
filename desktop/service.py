@@ -76,11 +76,11 @@ class Service:
             if command == "analyze":
                 return {**self._handle_analyze(cmd), "request_id": request_id}
             if command == "watchlist":
-                return {"status": "success", "data": self.storage.get_watchlist(), "request_id": request_id}
+                return self._handle_watchlist(cmd, request_id)
             if command == "settings":
                 return self._handle_settings(cmd, request_id)
             if command == "reports":
-                return {"status": "success", "data": self.storage.get_reports(), "request_id": request_id}
+                return self._handle_reports(cmd, request_id)
             return {"status": "error", "error_code": "UNKNOWN_COMMAND", "message": f"Unknown command: {command}", "request_id": request_id}
         except Exception as e:
             LOGGER.exception("Command failed")
@@ -122,6 +122,37 @@ class Service:
             results.append({"stock_code": code, "report_md": report_md, "report_json": report_json})
 
         return {"status": "success", "mode": mode, "data": results}
+
+    def _handle_watchlist(self, cmd: dict, request_id: str) -> dict:
+        action = cmd.get("action", "get")
+        if action == "get":
+            return {"status": "success", "data": self.storage.get_watchlist(), "request_id": request_id}
+        if action == "add":
+            stock_code = cmd.get("stock_code", "")
+            stock_name = cmd.get("stock_name", "")
+            if not stock_code:
+                return {"status": "error", "error_code": "MISSING_CODE", "message": "Missing stock_code", "request_id": request_id}
+            self.storage.save_watchlist_item(stock_code, stock_name)
+            return {"status": "success", "request_id": request_id}
+        if action == "remove":
+            stock_code = cmd.get("stock_code", "")
+            if not stock_code:
+                return {"status": "error", "error_code": "MISSING_CODE", "message": "Missing stock_code", "request_id": request_id}
+            self.storage.delete_watchlist_item(stock_code)
+            return {"status": "success", "request_id": request_id}
+        return {"status": "error", "error_code": "INVALID_ACTION", "message": f"Invalid watchlist action: {action}", "request_id": request_id}
+
+    def _handle_reports(self, cmd: dict, request_id: str) -> dict:
+        action = cmd.get("action", "get")
+        if action == "get":
+            return {"status": "success", "data": self.storage.get_reports(), "request_id": request_id}
+        if action == "delete":
+            report_id = cmd.get("report_id")
+            if report_id is None:
+                return {"status": "error", "error_code": "MISSING_REPORT_ID", "message": "Missing report_id", "request_id": request_id}
+            self.storage.delete_report(int(report_id))
+            return {"status": "success", "request_id": request_id}
+        return {"status": "error", "error_code": "INVALID_ACTION", "message": f"Invalid reports action: {action}", "request_id": request_id}
 
     def _handle_settings(self, cmd: dict, request_id: str) -> dict:
         action = cmd.get("action", "get")

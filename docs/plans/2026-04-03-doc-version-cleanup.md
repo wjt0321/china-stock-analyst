@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** 对 `README.md`、`README_EN.md` 和 `SKILL.md` 做一轮版本信息统一审查，清理残留的旧测试数字、旧版本号和已漂移口径。
+**Goal:** 对 `README.md`、`README_EN.md` 和 `docs/archive/02-skill-entry-20260403.md` 做一轮版本信息统一审查，清理残留的旧测试数字、旧版本号和已漂移口径。
 
 **Architecture:** 先通过关键词扫描识别残留的版本漂移，再对三份文档做最小改动统一：优先保证“当前版本、测试数量、Web Search 主路径、东方财富补充复核”的口径一致。最后通过检索和必要的回归命令验证文档与当前实现一致。
 
@@ -15,7 +15,7 @@
 **Files:**
 - Read: `README.md`
 - Read: `README_EN.md`
-- Read: `SKILL.md`
+- Read: `docs/archive/02-skill-entry-20260403.md`
 
 **Step 1: 搜索版本号与测试数**
 - 检查 `2.4.0 / 2.4.1 / 2.4.2 / 94 / 95 / 115 / 130 / 必做 / required` 等关键词。
@@ -33,7 +33,7 @@
 **Files:**
 - Modify: `README.md`
 - Modify: `README_EN.md`
-- Modify: `SKILL.md`（仅在发现残留漂移时）
+- Modify: `docs/archive/02-skill-entry-20260403.md`（仅在发现残留漂移时）
 
 **Step 1: 修正测试数字**
 - 所有面向当前状态的测试总量统一到最新实际值。

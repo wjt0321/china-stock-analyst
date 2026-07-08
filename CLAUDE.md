@@ -4,14 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-A股智能分析助手（china-stock-analyst）是一个 Claude Code 技能，用于 A 股短线交易分析。核心特点：「短线交易信号 + 营收质量」双轨研判体系，采用 Team-First 默认并行架构，支持插件化扩展、回测框架、策略优化。
+A股智能分析助手（china-stock-analyst）是一个 A 股短线交易分析工具。核心特点：「短线交易信号 + 营收质量」双轨研判体系，采用 Team-First 默认并行架构，支持插件化扩展、回测框架、策略优化。
 
-当前版本：**v3.1.0**
+当前项目以 **Tauri 2 + Python Sidecar 桌面端** 为主要运行形态，原 Claude Code Skill 脚本与专家定义作为后端分析能力继续保留。
+
+当前版本：**v3.2.0**
 
 ## 运行测试
 
 ```bash
-# 运行全部测试
+# 运行核心回归测试
 python -m pytest tests/ -v
 
 # 运行主测试
@@ -20,23 +22,36 @@ python -m pytest tests/test_stock_skill.py -v
 # 运行集成测试
 python -m pytest tests/test_integration.py -v
 
+# 运行桌面端测试
+python -m pytest desktop/tests -v
+
 # 运行单个测试方法
 python -m unittest tests.test_stock_skill.TestStockSkill.test_should_enable_agent_team_for_multi_stock_request -v
 ```
 
-测试覆盖范围：路由判定、数据审计、专家鉴别、舆情治理、东方财富 API 集成、回测框架、插件系统、策略优化、归因分析。当前回归测试：**145 项全部通过**。
+测试覆盖范围：路由判定、数据审计、专家鉴别、舆情治理、东方财富 API 集成、回测框架、插件系统、策略优化、归因分析、桌面端持久化与 Sidecar 命令。当前回归测试：**145 项核心测试 + 62 项桌面端测试全部通过**。
 
 ## 目录结构
 
 ```
 china-stock-analyst/
-├── SKILL.md                    # 技能完整文档（v3.1.0）
-├── README.md                   # 项目说明
+├── README.md                   # 项目说明（桌面端使用入口）
 ├── CLAUDE.md                   # 开发者指南
 ├── requirements.txt            # Python 依赖
 ├── config/
 │   └── settings.json           # 外置配置
-├── scripts/
+├── desktop/                    # Python Sidecar 服务
+│   ├── service.py              # Sidecar 主服务
+│   ├── storage.py              # SQLite 持久化
+│   ├── data_fetcher.py         # 多源数据获取
+│   ├── analysis_engine.py      # 分析引擎
+│   ├── report_renderer.py      # Markdown 报告渲染
+│   ├── scrapling_adapters/     # Scrapling 数据源适配器
+│   └── tests/                  # 桌面端测试
+├── src-tauri/                  # Tauri 桌面端
+│   ├── ui/                     # React + Vite 前端
+│   └── src/                    # Rust 宿主代码
+├── scripts/                    # 原 Skill 核心脚本
 │   ├── team_router.py          # 执行模式路由、插件系统
 │   ├── generate_report.py      # 报告生成、数据解析、评分计算
 │   ├── stock_utils.py          # 股票验证、时间戳处理、东方财富 API 封装
@@ -57,10 +72,12 @@ china-stock-analyst/
 │       ├── technical_indicators_plugin.py
 │       └── fund_flow_plugin.py
 ├── agents/                     # 预配置专家 Agent 定义
-├── tests/
-│   ├── test_stock_skill.py     # 单元测试
-│   └── test_integration.py     # 集成测试
+├── tests/                      # 核心回归测试
+├── stock-reports/              # 生成的 Markdown 报告
 ├── docs/
+│   ├── archive/                # 历史文档归档（编号 01-06）
+│   ├── plans/                  # 实施计划
+│   ├── superpowers/            # 设计规格
 │   └── WINDOWS_SETUP.md        # Windows 配置指南
 └── assets/
     └── 报告模板.md              # Obsidian 风格报告模板
@@ -294,9 +311,9 @@ pip install akshare
 
 ## 关键文件说明
 
-| 文件 | 用途 |
+| 文件/目录 | 用途 |
 |------|------|
-| `SKILL.md` | 技能完整文档 |
+| `README.md` | 项目说明与桌面端使用指南 |
 | `scripts/team_router.py` | 模式路由、插件系统 |
 | `scripts/generate_report.py` | 报告生成 |
 | `scripts/backtest_framework.py` | 回测框架 |
@@ -307,6 +324,44 @@ pip install akshare
 | `scripts/technical_indicators.py` | 技术指标计算 |
 | `config/settings.json` | 外置配置 |
 | `plugins/expert/` | 示例插件 |
+| `desktop/service.py` | Python Sidecar 主服务 |
+| `desktop/storage.py` | SQLite 持久化（自选、报告、缓存、设置） |
+| `src-tauri/ui/` | React + Vite 前端 |
+| `src-tauri/src/` | Rust 宿主与 Sidecar 进程管理 |
+| `docs/archive/` | 历史文档归档（含早期 SKILL.md） |
+
+## 桌面端开发
+
+### 启动开发模式
+
+```bash
+# 安装前端依赖
+cd src-tauri/ui && npm install
+cd ../..
+
+# 启动 Tauri dev（会自动拉起 Python Sidecar）
+npx --prefix src-tauri/ui tauri dev
+```
+
+### 关键前端页面
+
+| 页面 | 文件 | 功能 |
+|------|------|------|
+| 分析向导 | `src-tauri/ui/src/pages/Analyzer.tsx` | 输入代码、触发分析、加入自选 |
+| 自选股看板 | `src-tauri/ui/src/pages/Dashboard.tsx` | 展示自选、最近报告、快速分析 |
+| 报告列表 | `src-tauri/ui/src/pages/ReportViewer.tsx` | 按标题展示报告、删除、查看正文 |
+| 设置 | `src-tauri/ui/src/pages/Settings.tsx` | 数据源、LLM、分析参数配置 |
+
+### Sidecar 命令协议
+
+前端通过 Tauri `send_command` 调用 Rust 宿主，Rust 通过 STDIO 与 `desktop/service.py` 通信：
+
+```json
+{ "cmd": "analyze", "codes": ["600519"], "mode": "single", "request_id": "..." }
+{ "cmd": "watchlist", "action": "get|add|remove" }
+{ "cmd": "reports", "action": "get|delete", "report_id": 1 }
+{ "cmd": "settings", "action": "get|set" }
+```
 
 ## 开发建议
 
@@ -314,6 +369,8 @@ pip install akshare
 2. **新增专家插件**：在 `plugins/expert/` 创建新文件
 3. **修改回测参数**：编辑 `config/settings.json` 的 `backtest` 节点
 4. **新增技术指标**：修改 `scripts/technical_indicators.py`
+5. **新增数据源**：在 `desktop/scrapling_adapters/` 实现适配器并在 `desktop/service.py` 注册
+6. **调整前端页面**：修改 `src-tauri/ui/src/pages/` 下对应组件
 
 ## 免责声明
 

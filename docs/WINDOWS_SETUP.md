@@ -16,11 +16,13 @@
 
 ## 环境要求
 
-| 组件 | 最低版本 | 推荐版本 |
-|:---|:---|:---|
-| Windows 11 | 22H2+ | 最新版本 |
-| Python | 3.10 | 3.11 / 3.12 |
-| Git | 2.40+ | 最新版本 |
+| 组件 | 最低版本 | 推荐版本 | 说明 |
+|:---|:---|:---|:---|
+| Windows 11 | 22H2+ | 最新版本 | 桌面端主要支持平台 |
+| Python | 3.10 | 3.11 / 3.12 | Sidecar 服务运行环境 |
+| Node.js | 18.0 | 20.x LTS | Tauri 前端构建 |
+| Git | 2.40+ | 最新版本 | 版本控制 |
+| Rust | 1.70+ | 最新稳定版 | Tauri 后端编译 |
 
 ---
 
@@ -70,28 +72,28 @@ pip xx.x.x from C:\Users\...\AppData\Local\Programs\Python\Python311\site-packag
 ### 克隆到本地
 
 ```powershell
-# 方式1：克隆到自定义目录
 git clone https://github.com/wjt0321/china-stock-analyst.git D:\Projects\china-stock-analyst
-
-# 方式2：克隆到 Claude Code 技能目录
-git clone https://github.com/wjt0321/china-stock-analyst.git "$env:USERPROFILE\.claude\skills\china-stock-analyst"
+cd D:\Projects\china-stock-analyst
 ```
+
+> 注：早期版本可克隆到 Claude Code 技能目录使用，当前项目以桌面端为主要形态。
+> 历史 Skill 入口已归档至 `docs/archive/02-skill-entry-20260403.md`。
 
 ### 验证克隆成功
 
 ```powershell
-cd "$env:USERPROFILE\.claude\skills\china-stock-analyst"
 dir
 ```
 
-预期看到以下文件：
+预期看到以下文件/目录：
 ```
 AGENTS.md
 CLAUDE.md
 README.md
-SKILL.md
 config/
+desktop/
 scripts/
+src-tauri/
 plugins/
 tests/
 agents/
@@ -105,8 +107,16 @@ agents/
 ### 安装 Python 依赖
 
 ```powershell
-cd "$env:USERPROFILE\.claude\skills\china-stock-analyst"
+cd D:\Projects\china-stock-analyst
 pip install -r requirements.txt
+```
+
+### 安装前端依赖
+
+```powershell
+cd src-tauri/ui
+npm install
+cd ../..
 ```
 
 ### 核心依赖
@@ -115,12 +125,15 @@ pip install -r requirements.txt
 |:---|:---|
 | `akshare` | 免费 A 股数据源 |
 | `pytest` | 测试框架 |
+| `@tauri-apps/cli` | Tauri 命令行工具 |
+| `vite` | 前端构建工具 |
 
 ### 验证依赖
 
 ```powershell
 python -c "import akshare; print('AKShare:', akshare.__version__)"
 python -c "import pytest; print('Pytest:', pytest.__version__)"
+npx --prefix src-tauri/ui tauri --version
 ```
 
 ---
@@ -215,24 +228,56 @@ python -c "import akshare as ak; df = ak.stock_zh_a_hist(symbol='600519', period
 
 ---
 
-## 验证安装
+## 启动桌面端
 
-### 运行单元测试
+### 开发模式
 
 ```powershell
-cd "$env:USERPROFILE\.claude\skills\china-stock-analyst"
+cd D:\Projects\china-stock-analyst
+npx --prefix src-tauri/ui tauri dev
+```
+
+首次启动会编译 Rust 端并拉起 Python Sidecar，可能需要 1-3 分钟。
+窗口弹出后，输入股票代码并点击「开始分析」即可生成报告。
+
+### 生产打包
+
+```powershell
+python scripts/build_sidecar.py
+cd src-tauri && cargo tauri build
+```
+
+打包完成后，安装包位于 `src-tauri/target/release/bundle/`。
+
+## 验证安装
+
+### 运行核心单元测试
+
+```powershell
+cd D:\Projects\china-stock-analyst
 python -m pytest tests/test_stock_skill.py -v
 ```
 
 预期输出：
 ```
-============================= 130 passed in 0.28s ==============================
+============================= 145 passed in 0.28s ==============================
 ```
 
 ### 运行集成测试
 
 ```powershell
 python -m pytest tests/test_integration.py -v
+```
+
+### 运行桌面端测试
+
+```powershell
+python -m pytest desktop/tests -v
+```
+
+预期输出：
+```
+============================= 62 passed in 10s ================================
 ```
 
 ### 测试 AKShare 数据获取
@@ -324,9 +369,34 @@ $env:PYTHONIOENCODING = "utf-8"
 **解决**：
 ```powershell
 # 清理缓存文件
-Remove-Item "$env:USERPROFILE\.claude\skills\china-stock-analyst\scripts\.team_router_intent_cache.json" -ErrorAction SilentlyContinue
-Remove-Item "$env:USERPROFILE\.claude\skills\china-stock-analyst\scripts\.eastmoney_daily_counter.json" -ErrorAction SilentlyContinue
+Remove-Item "D:\Projects\china-stock-analyst\scripts\.team_router_intent_cache.json" -ErrorAction SilentlyContinue
+Remove-Item "D:\Projects\china-stock-analyst\scripts\.eastmoney_daily_counter.json" -ErrorAction SilentlyContinue
 ```
+
+### 问题 6：Tauri 启动失败 / 找不到 Rust
+
+**症状**：
+```
+error: could not find `cargo`
+```
+
+**解决**：
+1. 安装 Rust：`https://www.rust-lang.org/tools/install`
+2. 使用 `rustup` 安装 stable 工具链
+3. 重新打开 PowerShell 使环境变量生效
+
+### 问题 7：前端页面空白或 Sidecar 超时
+
+**解决**：
+1. 检查 5173 端口是否被占用：
+   ```powershell
+   netstat -ano | findstr 5173
+   ```
+2. 确认 Python Sidecar 依赖已安装：
+   ```powershell
+   python desktop/service.py
+   ```
+3. 查看 Tauri 日志：`src-tauri/target/debug/` 或 `%LOCALAPPDATA%\china-stock-analyst-desktop\desktop.log`
 
 ### 问题 6：测试通过但实际运行报错
 
@@ -346,20 +416,24 @@ python -m pytest tests/test_stock_skill.py -v
 
 ```powershell
 # 1. 进入项目目录
-cd "$env:USERPROFILE\.claude\skills\china-stock-analyst"
+cd D:\Projects\china-stock-analyst
 
-# 2. 安装依赖
+# 2. 安装 Python 依赖
 pip install -r requirements.txt
 
-# 3. 运行测试
+# 3. 安装前端依赖
+cd src-tauri/ui && npm install
+cd ../..
+
+# 4. 运行测试
 python -m pytest tests/test_stock_skill.py -v
+python -m pytest desktop/tests -v
 
-# 4. 测试 AKShare
+# 5. 启动桌面端开发模式
+npx --prefix src-tauri/ui tauri dev
+
+# 6. 测试 AKShare
 python -c "from scripts.akshare_adapter import AKShareAdapter; print(AKShareAdapter().get_full_data('600519').stock_name)"
-
-# 5. 在 Claude Code 中使用
-# 请分析 600519（茅台）
-# 请对比中国能建和首开股份
 ```
 
 ---
