@@ -19,14 +19,13 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: https:;",
       "capabilities": ["default"]
     }
   },
   "bundle": {
     "active": true,
     "targets": ["msi", "nsis"],
-    "icon": ["icons/icon.ico"],
-    "externalBin": ["python"]
+    "icon": ["icons/icon.ico"]
   }
 }

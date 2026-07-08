@@ -57,4 +57,5 @@ src-tauri/gen/
 src-tauri/**/*.rs.bk
 
 # Tauri build outputs
+src-tauri/sidecars/
 src-tauri/sidecars/python/

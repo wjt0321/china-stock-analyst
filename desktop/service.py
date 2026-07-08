@@ -93,35 +93,43 @@ class Service:
             return {"status": "error", "error_code": "MISSING_CODES", "message": "No stock codes provided"}
 
         results = []
+        errors = []
         for code in codes:
-            raw = self.fetcher.fetch(code, scrapers=self.scrapers)
-            if not raw:
-                return {"status": "error", "error_code": "SOURCE_ALL_FAILED", "message": f"All sources failed for {code}"}
-
-            validated = self.validator.validate(code, raw)
-            report_json = self.engine.analyze(code, validated)
-
-            stock_name = validated.get("name", {}).get("value", "")
-            report_md = self.renderer.render(report_json, stock_name=stock_name)
-
-            # Persist Markdown report to the stock-reports directory.
             try:
-                base_dir = Path(__file__).resolve().parent.parent
-                output_dir = Path(os.environ.get("STOCK_REPORTS_DIR", base_dir / "stock-reports"))
-                report_path = self.renderer.save_to_file(report_md, code, output_dir)
-                report_json["report_path"] = str(report_path)
+                raw = self.fetcher.fetch(code, scrapers=self.scrapers)
+                if not raw:
+                    errors.append({"stock_code": code, "error_code": "SOURCE_ALL_FAILED", "message": f"All sources failed for {code}"})
+                    continue
+
+                validated = self.validator.validate(code, raw)
+                report_json = self.engine.analyze(code, validated)
+
+                stock_name = validated.get("name", {}).get("value", "")
+                report_md = self.renderer.render(report_json, stock_name=stock_name)
+
+                # Persist Markdown report to the stock-reports directory.
+                try:
+                    base_dir = Path(__file__).resolve().parent.parent
+                    output_dir = Path(os.environ.get("STOCK_REPORTS_DIR", base_dir / "stock-reports"))
+                    report_path = self.renderer.save_to_file(report_md, code, output_dir)
+                    report_json["report_path"] = str(report_path)
+                except Exception as e:
+                    LOGGER.error(f"Failed to save report file: {e}")
+
+                enhanced = self.llm.enhance(report_json)
+                if enhanced:
+                    report_json["ai_enhancement"] = enhanced
+                    report_md += f"\n\n## AI 增强解读\n\n{enhanced}"
+
+                self.storage.save_report(code, mode, report_md, report_json)
+                results.append({"stock_code": code, "report_md": report_md, "report_json": report_json})
             except Exception as e:
-                LOGGER.error(f"Failed to save report file: {e}")
+                LOGGER.exception(f"Analysis failed for {code}")
+                errors.append({"stock_code": code, "error_code": "INTERNAL_ERROR", "message": str(e)})
 
-            enhanced = self.llm.enhance(report_json)
-            if enhanced:
-                report_json["ai_enhancement"] = enhanced
-                report_md += f"\n\n## AI 增强解读\n\n{enhanced}"
-
-            self.storage.save_report(code, mode, report_md, report_json)
-            results.append({"stock_code": code, "report_md": report_md, "report_json": report_json})
-
-        return {"status": "success", "mode": mode, "data": results}
+        if not results and errors:
+            return {"status": "error", "error_code": "ANALYSIS_ALL_FAILED", "message": "All requested stocks failed", "errors": errors}
+        return {"status": "success" if not errors else "partial_success", "mode": mode, "data": results, "errors": errors}
 
     def _handle_watchlist(self, cmd: dict, request_id: str) -> dict:
         action = cmd.get("action", "get")

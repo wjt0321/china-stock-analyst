@@ -1,3 +1,0 @@
-This placeholder is required by Tauri's externalBin check.
-Replace it with a real embedded Python runtime (e.g. python-x86_64-pc-windows-msvc.exe)
-or use src-tauri/sidecars/python.bat for development with a system Python.

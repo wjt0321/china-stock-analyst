@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { marked } from "marked";
+import DOMPurify from "dompurify";
 import "./Markdown.css";
 
 interface MarkdownProps {
@@ -8,7 +9,8 @@ interface MarkdownProps {
 
 export default function Markdown({ content }: MarkdownProps) {
   const html = useMemo(() => {
-    return marked.parse(content, { async: false }) as string;
+    const raw = marked.parse(content, { async: false }) as string;
+    return DOMPurify.sanitize(raw);
   }, [content]);
 
   return (

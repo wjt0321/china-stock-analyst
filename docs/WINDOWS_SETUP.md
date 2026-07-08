@@ -232,6 +232,8 @@ python -c "import akshare as ak; df = ak.stock_zh_a_hist(symbol='600519', period
 
 ### 开发模式
 
+> 注意：桌面端直接调用系统 Python（3.10+）运行 `desktop/service.py`，不会使用内嵌解释器。
+
 ```powershell
 cd D:\Projects\china-stock-analyst
 npx --prefix src-tauri/ui tauri dev

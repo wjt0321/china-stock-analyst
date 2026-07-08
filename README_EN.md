@@ -357,6 +357,8 @@ The project now ships a **Tauri 2 + Python Sidecar** desktop app as the primary 
 
 ### Development
 
+> Prerequisite: Python 3.10+ is installed on the system (the desktop sidecar spawns the system Python directly).
+
 ```bash
 # Install frontend dependencies
 cd src-tauri/ui && npm install

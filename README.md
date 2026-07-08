@@ -356,6 +356,8 @@ python -m pytest desktop/tests -v
 
 ### 开发运行
 
+> 前提：系统已安装 Python 3.10+（桌面端 Sidecar 直接调用系统 Python）。
+
 ```bash
 # 1. 安装前端依赖
 cd src-tauri/ui && npm install

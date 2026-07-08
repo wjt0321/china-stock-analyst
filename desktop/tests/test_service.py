@@ -111,8 +111,27 @@ def test_service_handle_analyze_source_all_failed():
     cmd = {"cmd": "analyze", "codes": ["600519"], "mode": "single", "request_id": "r9"}
     result = service.handle(cmd)
     assert result["status"] == "error"
-    assert result["error_code"] == "SOURCE_ALL_FAILED"
+    assert result["error_code"] == "ANALYSIS_ALL_FAILED"
     assert result["request_id"] == "r9"
+    assert len(result["errors"]) == 1
+    assert result["errors"][0]["stock_code"] == "600519"
+
+
+def test_service_handle_analyze_partial_success():
+    service = _make_service()
+
+    def _fetch(code, scrapers=None):
+        return {} if code == "000001" else {"akshare": {"price": 10.0}}
+
+    service.fetcher.fetch.side_effect = _fetch
+    cmd = {"cmd": "analyze", "codes": ["000001", "600519"], "mode": "compare", "request_id": "r14"}
+    result = service.handle(cmd)
+    assert result["status"] == "partial_success"
+    assert result["request_id"] == "r14"
+    assert len(result["data"]) == 1
+    assert result["data"][0]["stock_code"] == "600519"
+    assert len(result["errors"]) == 1
+    assert result["errors"][0]["stock_code"] == "000001"
 
 
 def test_service_handle_settings_set_missing_key():

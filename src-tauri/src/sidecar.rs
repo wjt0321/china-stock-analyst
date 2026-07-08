@@ -64,13 +64,10 @@ pub struct SidecarState {
 }
 
 pub fn spawn_sidecar(app: &AppHandle) -> Result<(), String> {
-    // The committed `python-x86_64-pc-windows-msvc.exe` is a placeholder and
-    // `.bat` files cannot be executed through Tauri's sidecar API. Spawn the
-    // system Python directly for the dev workflow.
-    //
-    // In dev mode the executable lives at:
-    //   <project_root>/src-tauri/target/debug/china-stock-analyst-desktop.exe
-    // so we derive the project root by walking up from the executable path.
+    // The desktop sidecar is the Python service at desktop/service.py.
+    // We spawn the system Python directly and add the project root to
+    // PYTHONPATH so that `desktop.*` and `scripts.*` packages are importable.
+    // A system Python 3.10+ install is required; see README.md for setup.
     let exe_path = std::env::current_exe().map_err(|e| format!("Failed to get current exe: {}", e))?;
     let exe_dir = exe_path.parent().ok_or("Executable has no parent directory")?;
     // src-tauri/target/debug -> src-tauri/target -> src-tauri -> project_root
@@ -94,6 +91,12 @@ pub fn spawn_sidecar(app: &AppHandle) -> Result<(), String> {
     // Use an absolute Python path to avoid resolving a potentially incompatible
     // `python` shim from the parent process's PATH (e.g., Node/npm installed ones).
     let python_exe = find_python_exe();
+    if !python_exe.exists() {
+        return Err(format!(
+            "Python executable not found at {}. Please install Python 3.10+ and ensure it is on PATH, or set the PYTHON_EXE environment variable.",
+            python_exe.display()
+        ));
+    }
     eprintln!("[sidecar] using python executable: {}", python_exe.display());
 
     let mut cmd = Command::new(&python_exe);
@@ -104,8 +107,14 @@ pub fn spawn_sidecar(app: &AppHandle) -> Result<(), String> {
         .current_dir(&project_root);
 
     // Make sure desktop.* and scripts.* packages are importable.
+    // Use the platform-specific separator so the same code works on Windows,
+    // macOS, and Linux.
     let pythonpath = std::env::var("PYTHONPATH").unwrap_or_default();
-    cmd.env("PYTHONPATH", format!("{};{}", project_root.display(), pythonpath));
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    cmd.env(
+        "PYTHONPATH",
+        format!("{}{}{}", project_root.display(), sep, pythonpath),
+    );
 
     // Tell the Python service where to store application data and logs.
     // The service falls back to platform defaults when this is not set.

@@ -29,8 +29,8 @@ def main():
         print("FULL_PYTHON_SIDECAR is set: a full embedded Python runtime would be bundled.")
     else:
         print("FULL_PYTHON_SIDECAR is not set: only Python packages are bundled.")
-        print("The desktop runtime will use the system Python via src-tauri/sidecars/python.bat.")
-        print("Ensure a Python interpreter is available on the target system.")
+        print("The desktop runtime uses the system Python directly.")
+        print("Ensure Python 3.10+ is installed and available on the target system.")
 
 
 if __name__ == "__main__":
