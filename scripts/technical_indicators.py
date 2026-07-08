@@ -1,6 +1,7 @@
+import dataclasses
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -47,6 +48,20 @@ class SupportResistance:
     resistance_levels: list
     nearest_support: Optional[float]
     nearest_resistance: Optional[float]
+
+
+def indicators_to_dict(indicators: Any) -> Any:
+    """Recursively convert indicator result (including nested dataclasses) to plain dicts.
+
+    Useful for desktop sidecar callers that need JSON-serializable outputs.
+    """
+    if dataclasses.is_dataclass(indicators):
+        return indicators_to_dict(dataclasses.asdict(indicators))
+    if isinstance(indicators, dict):
+        return {k: indicators_to_dict(v) for k, v in indicators.items()}
+    if isinstance(indicators, list):
+        return [indicators_to_dict(v) for v in indicators]
+    return indicators
 
 
 def calc_true_range(high: float, low: float, prev_close: float) -> float:
