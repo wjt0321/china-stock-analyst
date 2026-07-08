@@ -1,5 +1,5 @@
 akshare>=1.18.0
-scrapling>=1.0.0
+scrapling>=0.4.10
 pandas>=1.5.0
 httpx>=0.24.0
 pytest>=7.0.0
