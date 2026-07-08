@@ -9,43 +9,50 @@ def get_skill_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _home_dir() -> Path:
+    try:
+        return Path.home()
+    except RuntimeError:
+        return get_skill_root()
+
+
 def get_platform_cache_dir() -> Path:
     if sys.platform == 'win32':
-        base = os.environ.get('LOCALAPPDATA') or os.environ.get('APPDATA') or str(Path.home())
+        base = os.environ.get('LOCALAPPDATA') or os.environ.get('APPDATA') or str(_home_dir())
         return Path(base) / 'china-stock-analyst' / 'cache'
     elif sys.platform == 'darwin':
-        return Path.home() / 'Library' / 'Caches' / 'china-stock-analyst'
+        return _home_dir() / 'Library' / 'Caches' / 'china-stock-analyst'
     else:
         xdg_cache = os.environ.get('XDG_CACHE_HOME')
         if xdg_cache:
             return Path(xdg_cache) / 'china-stock-analyst'
-        return Path.home() / '.cache' / 'china-stock-analyst'
+        return _home_dir() / '.cache' / 'china-stock-analyst'
 
 
 def get_platform_config_dir() -> Path:
     if sys.platform == 'win32':
-        base = os.environ.get('APPDATA') or str(Path.home())
+        base = os.environ.get('APPDATA') or str(_home_dir())
         return Path(base) / 'china-stock-analyst' / 'config'
     elif sys.platform == 'darwin':
-        return Path.home() / 'Library' / 'Application Support' / 'china-stock-analyst'
+        return _home_dir() / 'Library' / 'Application Support' / 'china-stock-analyst'
     else:
         xdg_config = os.environ.get('XDG_CONFIG_HOME')
         if xdg_config:
             return Path(xdg_config) / 'china-stock-analyst'
-        return Path.home() / '.config' / 'china-stock-analyst'
+        return _home_dir() / '.config' / 'china-stock-analyst'
 
 
 def get_platform_data_dir() -> Path:
     if sys.platform == 'win32':
-        base = os.environ.get('LOCALAPPDATA') or os.environ.get('APPDATA') or str(Path.home())
+        base = os.environ.get('LOCALAPPDATA') or os.environ.get('APPDATA') or str(_home_dir())
         return Path(base) / 'china-stock-analyst' / 'data'
     elif sys.platform == 'darwin':
-        return Path.home() / 'Library' / 'Application Support' / 'china-stock-analyst'
+        return _home_dir() / 'Library' / 'Application Support' / 'china-stock-analyst'
     else:
         xdg_data = os.environ.get('XDG_DATA_HOME')
         if xdg_data:
             return Path(xdg_data) / 'china-stock-analyst'
-        return Path.home() / '.local' / 'share' / 'china-stock-analyst'
+        return _home_dir() / '.local' / 'share' / 'china-stock-analyst'
 
 
 def ensure_dir(path: Path) -> bool:
