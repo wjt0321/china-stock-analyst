@@ -2,6 +2,7 @@ import logging
 from typing import Any
 
 from desktop.config_manager import ConfigManager
+from desktop.quant_flow import calc_proxy_fund_flow
 from scripts.technical_indicators import calc_full_indicators
 
 LOGGER = logging.getLogger(__name__)
@@ -162,7 +163,34 @@ class AnalysisEngine:
         return {"view": "中性", "decision_hint": "观察", "evidences": []}
 
     def _quant_flow_expert(self, validated_data: dict) -> dict:
-        return {"view": "中性", "decision_hint": "观察", "evidences": []}
+        candles, source = self._pick_candles(validated_data)
+        if not candles or len(candles) < 5:
+            return {"view": "数据不足", "decision_hint": "观察", "evidences": ["缺乏K线数据，无法估算资金流向"]}
+
+        flow = calc_proxy_fund_flow(candles, recent_days=5)
+        direction = flow.get("direction", "neutral")
+        intensity = flow.get("intensity", "weak")
+        recent_net_pct = flow.get("recent_net_pct", 0.0)
+
+        hints = [
+            f"数据来源: {source} K线（估算资金流向，非交易所真实资金流）",
+            flow.get("summary", ""),
+            f"近5日净流入占比: {recent_net_pct:.2f}%",
+        ]
+
+        decision = "观察"
+        if direction == "inflow" and intensity in ("strong", "moderate"):
+            decision = "可做"
+        elif direction == "outflow" and intensity == "strong":
+            decision = "回避"
+
+        view = "多头" if decision == "可做" else "空头" if decision == "回避" else "中性"
+        return {
+            "view": view,
+            "decision_hint": decision,
+            "indicators": flow,
+            "evidences": [h for h in hints if h],
+        }
 
     def _risk_expert(self, validated_data: dict) -> dict:
         return {"view": "可控", "decision_hint": "观察", "evidences": []}
@@ -241,15 +269,25 @@ class AnalysisEngine:
             position = "上方" if deviation > 0 else "下方"
             reasoning.append(f"价格位于 VWAP {position}，偏离 {deviation:.2f}%")
 
-        # Note when non-technical experts are still placeholder/neutral.
+        # Quant flow now also has a real signal derived from K-line.
+        quant_flow = report["expert_outputs"].get("quant_flow", {})
+        if quant_flow.get("evidences"):
+            q_hint = quant_flow.get("decision_hint", "观察")
+            q_view = quant_flow.get("view", "中性")
+            reasoning.append(f"资金面（K线估算）判断为「{q_view}」，建议「{q_hint}」")
+            q_summary = quant_flow.get("indicators", {}).get("summary", "")
+            if q_summary:
+                reasoning.append(q_summary)
+
+        # Note when other experts are still placeholder/neutral.
         neutral_experts = [
             name
             for name, output in report["expert_outputs"].items()
-            if name != "technical" and output.get("decision_hint") == "观察" and not output.get("evidences")
+            if name not in ("technical", "quant_flow") and output.get("decision_hint") == "观察" and not output.get("evidences")
         ]
         if neutral_experts:
             reasoning.append(
-                f"目前仅技术面基于真实行情数据；{'、'.join(neutral_experts)} 等维度暂无有效数据源，整体评分偏保守。"
+                f"{'、'.join(neutral_experts)} 等维度暂无有效数据源，整体评分偏保守。"
             )
 
         return reasoning
