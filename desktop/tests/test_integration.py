@@ -10,7 +10,9 @@ from desktop.llm_adapter import LLMAdapter
 from desktop.service import Service
 
 
-def test_end_to_end_analyze(tmp_path):
+def test_end_to_end_analyze(tmp_path, monkeypatch):
+    monkeypatch.setenv("STOCK_REPORTS_DIR", str(tmp_path / "stock-reports"))
+
     storage = Storage(tmp_path / "app.db")
     storage.init_schema()
     config = ConfigManager(storage, defaults_path=Path("nonexistent"))
@@ -41,8 +43,15 @@ def test_end_to_end_analyze(tmp_path):
                 error_message="",
             ),
         ):
-            result = service.handle({"cmd": "analyze", "codes": ["600519"], "mode": "single", "request_id": "r1"})
+            with patch.object(
+                fetcher.akshare,
+                "get_index_trend",
+                return_value={"index": "sh000001", "days": 5, "start_close": 4000, "end_close": 4050, "change_pct": 1.25},
+            ):
+                result = service.handle({"cmd": "analyze", "codes": ["600519"], "mode": "single", "request_id": "r1"})
 
     assert result["status"] == "success"
     assert result["data"][0]["stock_code"] == "600519"
     assert "观察" in result["data"][0]["report_md"] or "可做" in result["data"][0]["report_md"] or "回避" in result["data"][0]["report_md"]
+    assert "report_path" in result["data"][0]["report_json"]
+    assert Path(result["data"][0]["report_json"]["report_path"]).exists()

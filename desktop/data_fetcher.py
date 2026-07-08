@@ -43,11 +43,13 @@ class DataFetcher:
                     PER_SOURCE_TIMEOUT_SECS,
                     max(0.0, overall_deadline - time.monotonic()),
                 )
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(self.akshare.get_full_data, stock_code)
-                    done, _ = wait([future], timeout=timeout)
-                    if future in done:
-                        full = future.result()
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    full_future = executor.submit(self.akshare.get_full_data, stock_code)
+                    macro_future = executor.submit(self.akshare.get_index_trend, "sh000001", 5)
+                    done, _ = wait([full_future, macro_future], timeout=timeout)
+
+                    if full_future in done:
+                        full = full_future.result()
                         result["akshare"] = {
                             "price": full.bid_ask.get("最新价") if full.bid_ask else None,
                             "candles": full.candles,
@@ -58,7 +60,13 @@ class DataFetcher:
                     else:
                         LOGGER.warning(f"AKShare fetch timed out for {stock_code}")
                         self.storage.log_source("akshare", "timeout", stock_code)
-                        future.cancel()
+                        full_future.cancel()
+
+                    if macro_future in done:
+                        macro = macro_future.result()
+                        if macro:
+                            result.setdefault("akshare", {})
+                            result["akshare"]["macro"] = macro
         except Exception as e:
             LOGGER.error(f"AKShare fetch failed: {e}")
             self.storage.log_source("akshare", "failed", stock_code, str(e))
@@ -128,11 +136,25 @@ class DataFetcher:
 
                     quote = future.result()
                     result.setdefault(scraper.name, {})
-                    result[scraper.name].update({
+                    quote_fields = {
                         "price": quote.price,
                         "change": quote.change,
                         "turnover": quote.turnover,
-                    })
+                        "name": quote.name,
+                        "open": quote.open,
+                        "high": quote.high,
+                        "low": quote.low,
+                        "volume": quote.volume,
+                        "pe_ttm": quote.pe_ttm,
+                        "pb": quote.pb,
+                        "market_cap": quote.market_cap,
+                        "float_market_cap": quote.float_market_cap,
+                        "turnover_rate": quote.turnover_rate,
+                        "volume_ratio": quote.volume_ratio,
+                        "amplitude": quote.amplitude,
+                        "change_pct": quote.change_pct,
+                    }
+                    result[scraper.name].update({k: v for k, v in quote_fields.items() if v is not None})
                     self.storage.log_source(scraper.name, "success", stock_code)
                 except Exception as e:
                     LOGGER.error(f"{scraper.name} fetch failed: {e}")

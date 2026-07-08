@@ -197,6 +197,32 @@ class AKShareAdapter:
             LOGGER.error(f"获取涨停板失败: {e}")
         return []
 
+    def get_index_trend(self, index_symbol: str = "sh000001", days: int = 5) -> dict:
+        """Return recent market index trend as a macro proxy.
+
+        Uses AKShare's stock_zh_index_daily which does not rely on the
+        blocked Eastmoney quote endpoints.
+        """
+        if not self.available:
+            return {}
+        try:
+            df = ak.stock_zh_index_daily(symbol=index_symbol)
+            if df is not None and not df.empty:
+                recent = df.tail(days)
+                start_close = float(recent.iloc[0]["close"])
+                end_close = float(recent.iloc[-1]["close"])
+                change_pct = ((end_close - start_close) / start_close * 100) if start_close else 0.0
+                return {
+                    "index": index_symbol,
+                    "days": len(recent),
+                    "start_close": round(start_close, 4),
+                    "end_close": round(end_close, 4),
+                    "change_pct": round(change_pct, 2),
+                }
+        except Exception as e:
+            LOGGER.error(f"获取指数趋势失败: {e}")
+        return {}
+
     def get_full_data(self, stock_code: str) -> AKShareData:
         candles = self.get_historical_candles(stock_code, days=60)
         fund_flow = self.get_fund_flow(stock_code)

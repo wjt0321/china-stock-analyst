@@ -54,17 +54,31 @@ class SinaScraper(BaseStockScraper):
             price = _float(parts, "price")
             prev = _float(parts, "prev_close")
             change = None
+            change_pct = None
             if price is not None and prev is not None:
                 change = price - prev
+                if prev != 0:
+                    change_pct = (change / prev) * 100
+
+            high = _float(parts, "high")
+            low = _float(parts, "low")
+            amplitude = None
+            if high is not None and low is not None and prev and prev != 0:
+                amplitude = (high - low) / prev * 100
+
+            name = parts[0] if len(parts) > 0 else None
 
             return QuoteSnapshot(
                 price=price,
                 change=change,
                 open=_float(parts, "open"),
-                high=_float(parts, "high"),
-                low=_float(parts, "low"),
+                high=high,
+                low=low,
                 volume=_float(parts, "volume"),
                 turnover=_float(parts, "turnover"),
+                name=name,
+                change_pct=change_pct,
+                amplitude=amplitude,
             )
         except Exception as e:
             LOGGER.error(f"Sina fetch_quote failed: {e}")

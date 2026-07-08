@@ -100,7 +100,19 @@ class Service:
 
             validated = self.validator.validate(code, raw)
             report_json = self.engine.analyze(code, validated)
-            report_md = self.renderer.render(report_json)
+
+            stock_name = validated.get("name", {}).get("value", "")
+            report_md = self.renderer.render(report_json, stock_name=stock_name)
+
+            # Persist Markdown report to the stock-reports directory.
+            try:
+                base_dir = Path(__file__).resolve().parent.parent
+                output_dir = Path(os.environ.get("STOCK_REPORTS_DIR", base_dir / "stock-reports"))
+                report_path = self.renderer.save_to_file(report_md, code, output_dir)
+                report_json["report_path"] = str(report_path)
+            except Exception as e:
+                LOGGER.error(f"Failed to save report file: {e}")
+
             enhanced = self.llm.enhance(report_json)
             if enhanced:
                 report_json["ai_enhancement"] = enhanced

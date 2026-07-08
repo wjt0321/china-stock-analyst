@@ -29,7 +29,23 @@ class DataValidator:
     def validate(self, stock_code: str, raw_data: dict) -> dict[str, ValidatedField]:
         result: dict[str, ValidatedField] = {}
 
-        numeric_fields = ["price", "change", "turnover"]
+        numeric_fields = [
+            "price",
+            "change",
+            "turnover",
+            "volume",
+            "open",
+            "high",
+            "low",
+            "pe_ttm",
+            "pb",
+            "market_cap",
+            "float_market_cap",
+            "turnover_rate",
+            "volume_ratio",
+            "amplitude",
+            "change_pct",
+        ]
         for field in numeric_fields:
             values = []
             sources = []
@@ -55,11 +71,11 @@ class DataValidator:
                 notes=notes,
             )
 
-        # Pass-through non-numeric data
+        # Pass-through non-numeric / structured data and metadata
         for source, fields in raw_data.items():
-            for key in ["candles", "fund_flow", "news"]:
+            for key in ["candles", "fund_flow", "news", "macro", "name"]:
                 if key in fields:
-                    full_key = f"{source}_{key}"
+                    full_key = key if key == "name" else f"{source}_{key}"
                     result[full_key] = ValidatedField(
                         value=fields[key],
                         sources=[source],

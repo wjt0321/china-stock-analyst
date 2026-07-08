@@ -160,7 +160,47 @@ class AnalysisEngine:
         }
 
     def _fundamental_expert(self, validated_data: dict) -> dict:
-        return {"view": "中性", "decision_hint": "观察", "evidences": []}
+        pe = validated_data.get("pe_ttm", {}).get("value")
+        pb = validated_data.get("pb", {}).get("value")
+        market_cap = validated_data.get("market_cap", {}).get("value")
+        price = validated_data.get("price", {}).get("value")
+
+        hints = []
+        if price is not None:
+            hints.append(f"最新价 {price:.2f} 元")
+        if market_cap is not None:
+            hints.append(f"总市值约 {market_cap:.2f} 亿元")
+        if pe is not None:
+            pe_desc = "偏高" if pe > 30 else "偏低" if pe < 10 else "合理"
+            hints.append(f"市盈率(TTM) {pe:.2f} 倍，估值{pe_desc}")
+        if pb is not None:
+            pb_desc = "偏高" if pb > 3 else "偏低" if pb < 1 else "合理"
+            hints.append(f"市净率 {pb:.2f} 倍，{pb_desc}")
+
+        if not hints:
+            return {"view": "数据不足", "decision_hint": "观察", "evidences": ["缺少估值/市值数据"]}
+
+        # Simple rule-based valuation signal.
+        score = 0
+        if pe is not None:
+            if pe < 15:
+                score += 1
+            elif pe > 50:
+                score -= 1
+        if pb is not None:
+            if pb < 1.5:
+                score += 1
+            elif pb > 5:
+                score -= 1
+
+        decision = "可做" if score >= 2 else "回避" if score <= -2 else "观察"
+        view = "低估" if decision == "可做" else "高估" if decision == "回避" else "中性"
+        return {
+            "view": view,
+            "decision_hint": decision,
+            "indicators": {"pe_ttm": pe, "pb": pb, "market_cap": market_cap},
+            "evidences": hints,
+        }
 
     def _quant_flow_expert(self, validated_data: dict) -> dict:
         candles, source = self._pick_candles(validated_data)
@@ -193,22 +233,152 @@ class AnalysisEngine:
         }
 
     def _risk_expert(self, validated_data: dict) -> dict:
-        return {"view": "可控", "decision_hint": "观察", "evidences": []}
+        candles, source = self._pick_candles(validated_data)
+        price = validated_data.get("price", {}).get("value")
+        turnover_rate = validated_data.get("turnover_rate", {}).get("value")
+        amplitude = validated_data.get("amplitude", {}).get("value")
+
+        if not candles or len(candles) < 2 or price is None:
+            return {"view": "数据不足", "decision_hint": "观察", "evidences": ["缺少K线或价格数据"]}
+
+        indicators = calc_full_indicators(candles)
+        atr_result = indicators.get("atr")
+        atr = atr_result.atr if atr_result else None
+        sr = indicators.get("support_resistance")
+        nearest_support = sr.nearest_support if sr else None
+
+        hints = []
+        if atr is not None:
+            stop_loss = price - atr * 2
+            hints.append(f"ATR = {atr:.4f}，建议止损位约 {stop_loss:.2f} 元")
+        if nearest_support is not None:
+            hints.append(f"最近支撑位 {nearest_support:.2f} 元")
+        if turnover_rate is not None:
+            liquidity = "活跃" if turnover_rate > 3 else "一般" if turnover_rate > 1 else "清淡"
+            hints.append(f"换手率 {turnover_rate:.2f}%，流动性{liquidity}")
+        if amplitude is not None:
+            vol_desc = "高波动" if amplitude > 5 else "中等波动" if amplitude > 2 else "低波动"
+            hints.append(f"当日振幅 {amplitude:.2f}%，{vol_desc}")
+
+        # Risk score: higher risk when high volatility + low liquidity.
+        risk_score = 0
+        if amplitude is not None and amplitude > 5:
+            risk_score += 1
+        if turnover_rate is not None and turnover_rate < 1:
+            risk_score += 1
+        if atr is not None and price and atr / price > 0.05:
+            risk_score += 1
+
+        decision = "回避" if risk_score >= 2 else "观察" if risk_score == 1 else "可做"
+        view = "高风险" if decision == "回避" else "可控"
+        return {
+            "view": view,
+            "decision_hint": decision,
+            "indicators": {
+                "atr": atr,
+                "stop_loss": round(price - atr * 2, 2) if atr else None,
+                "nearest_support": nearest_support,
+                "turnover_rate": turnover_rate,
+                "amplitude": amplitude,
+            },
+            "evidences": hints,
+        }
 
     def _macro_expert(self, validated_data: dict) -> dict:
-        return {"view": "中性", "decision_hint": "观察", "evidences": []}
+        macro = validated_data.get("akshare_macro", {}).get("value", {})
+        if not macro:
+            return {"view": "数据不足", "decision_hint": "观察", "evidences": ["缺少大盘指数数据"]}
+
+        change_pct = macro.get("change_pct", 0.0)
+        hints = [
+            f"上证指数近{macro.get('days', 5)}日变化 {change_pct:+.2f}%",
+            f"区间收盘 {macro.get('start_close')} -> {macro.get('end_close')}",
+        ]
+
+        if change_pct > 2:
+            decision = "可做"
+            view = "偏多"
+        elif change_pct < -2:
+            decision = "回避"
+            view = "偏空"
+        else:
+            decision = "观察"
+            view = "中性"
+
+        return {
+            "view": view,
+            "decision_hint": decision,
+            "indicators": macro,
+            "evidences": hints,
+        }
 
     def _industry_expert(self, validated_data: dict) -> dict:
-        return {"view": "中性", "decision_hint": "观察", "evidences": []}
+        # Industry classification sources are blocked/unstable in this environment.
+        # We keep the expert slot but mark it as lacking data.
+        return {
+            "view": "数据不足",
+            "decision_hint": "观察",
+            "evidences": ["行业分类数据源暂不可用，待接入后补充"],
+        }
 
     def _event_expert(self, validated_data: dict) -> dict:
-        return {"view": "中性", "decision_hint": "观察", "evidences": []}
+        news = validated_data.get("akshare_news", {}).get("value", [])
+        if not news:
+            return {"view": "数据不足", "decision_hint": "观察", "evidences": ["暂无相关新闻"]}
+
+        headlines = [n.get("title", "") for n in news[:5]]
+        hints = ["近期新闻标题:"] + [f"- {h}" for h in headlines if h]
+
+        # Very simple sentiment proxy based on keyword matching.
+        bullish = sum(1 for h in headlines if any(k in h for k in ["涨", "反弹", "利好", "预增", "突破", "增持"]))
+        bearish = sum(1 for h in headlines if any(k in h for k in ["跌", "下跌", "利空", "预减", "减持", "监管", "处罚"]))
+
+        if bullish > bearish:
+            decision = "可做"
+            view = "偏多"
+        elif bearish > bullish:
+            decision = "回避"
+            view = "偏空"
+        else:
+            decision = "观察"
+            view = "中性"
+
+        return {
+            "view": view,
+            "decision_hint": decision,
+            "indicators": {"headlines": headlines[:5], "bullish": bullish, "bearish": bearish},
+            "evidences": hints,
+        }
 
     def _run_identity_gate(self, validated_data: dict) -> dict:
-        return {"passed": True, "require_block": False, "notes": []}
+        price = validated_data.get("price", {}).get("value")
+        notes = []
+        if price is None:
+            notes.append("缺少实时价格，身份校验不完整")
+        return {"passed": True, "require_block": False, "notes": notes}
 
     def _run_supervisor_review(self, report: dict) -> dict:
-        return {"consensus": "观察", "conflict_items": []}
+        hints = [e.get("decision_hint", "观察") for e in report["expert_outputs"].values()]
+        bullish = hints.count("可做")
+        bearish = hints.count("回避")
+        neutral = len(hints) - bullish - bearish
+
+        if bullish > bearish and bullish >= 3:
+            consensus = "可做"
+        elif bearish > bullish and bearish >= 3:
+            consensus = "回避"
+        else:
+            consensus = "观察"
+
+        conflict_items = []
+        if bullish > 0 and bearish > 0:
+            conflict_items.append(f"存在分歧：{bullish} 位专家看多，{bearish} 位专家看空")
+
+        return {
+            "consensus": consensus,
+            "conflict_items": conflict_items,
+            "summary": f"看多{bullish} / 看空{bearish} / 中性{neutral}",
+        }
 
     def _calculate_score(self, report: dict) -> dict:
         cfg = self.cfg

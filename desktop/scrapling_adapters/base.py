@@ -14,6 +14,15 @@ class QuoteSnapshot:
     turnover: Optional[float] = None
     name: Optional[str] = None
     timestamp: Optional[str] = None
+    # Fundamental / risk metrics (when available from the source)
+    pe_ttm: Optional[float] = None
+    pb: Optional[float] = None
+    market_cap: Optional[float] = None  # 亿元
+    float_market_cap: Optional[float] = None  # 亿元
+    turnover_rate: Optional[float] = None  # %
+    volume_ratio: Optional[float] = None
+    amplitude: Optional[float] = None  # %
+    change_pct: Optional[float] = None  # %
 
 
 @dataclass
