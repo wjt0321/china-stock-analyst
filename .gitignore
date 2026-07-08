@@ -7,6 +7,7 @@ __pycache__/
 htmlcov/
 *.so
 .Python
+*.egg-info/
 
 # Runtime cache files
 scripts/.team_router_intent_cache.json
