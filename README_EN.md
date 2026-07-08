@@ -126,7 +126,7 @@ During analysis, the same field is fetched from several sources and aligned by m
 
 | Source | Type | Primary Use |
 |:---|:---|:---|
-| [Scrapling](https://git.wxbfnnas.com/wxb/scrapling.git) | Local web scraping framework | Crawls public quote pages from East Money, Sina, Tencent, Hexun/10jqka |
+| [Scrapling](https://github.com/D4Vinci/Scrapling.git) | Local web scraping framework | Crawls public quote pages from East Money, Sina, Tencent, Hexun/10jqka |
 | [AKShare](https://www.akshare.xyz/) | Open-source Python financial data library | Historical K-lines, capital flow, fundamental data |
 | [East Money](https://www.eastmoney.com/) | Public market data | Real-time quotes, financial indicators verification |
 | [Sina Finance](https://finance.sina.com.cn/) | Public market data | Real-time quotes, K-line data |
@@ -134,7 +134,7 @@ During analysis, the same field is fetched from several sources and aligned by m
 | [Hexun/10jqka](https://www.10jqka.com.cn/) | Public market data | Quotes and fundamental data |
 
 > 💡 **Acknowledgement**:
-> - [Scrapling](https://git.wxbfnnas.com/wxb/scrapling.git) provides a lightweight, extensible local web scraping capability, allowing the project to fetch public market data directly without relying on external search APIs, significantly improving data controllability and accuracy.
+> - [Scrapling](https://github.com/D4Vinci/Scrapling.git) provides a lightweight, extensible local web scraping capability, allowing the project to fetch public market data directly without relying on external search APIs, significantly improving data controllability and accuracy.
 > - The [AKShare](https://www.akshare.xyz/) community provides a rich, free, and actively maintained A-share data interface, enabling individual developers to access high-quality financial data in a compliant way.
 >
 > Public market data is intended for learning and research only; please do not use it for high-frequency trading or commercial purposes.

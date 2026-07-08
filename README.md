@@ -391,7 +391,7 @@ cd src-tauri && cargo tauri build
 
 | 数据源 | 类型 | 主要用途 |
 |:---|:---|:---|
-| [Scrapling](https://git.wxbfnnas.com/wxb/scrapling.git) | 本地网页爬取框架 | 爬取东方财富、新浪财经、腾讯财经、同花顺等公开行情页 |
+| [Scrapling](https://github.com/D4Vinci/Scrapling.git) | 本地网页爬取框架 | 爬取东方财富、新浪财经、腾讯财经、同花顺等公开行情页 |
 | [AKShare](https://www.akshare.xyz/) | 开源 Python 金融数据接口 | 历史K线、资金流向、基本面数据 |
 | [东方财富](https://www.eastmoney.com/) | 公开市场数据 | 实时行情、财务指标复核 |
 | [新浪财经](https://finance.sina.com.cn/) | 公开市场数据 | 实时行情、K线数据 |
@@ -399,7 +399,7 @@ cd src-tauri && cargo tauri build
 | [同花顺](https://www.10jqka.com.cn/) | 公开市场数据 | 行情与基本面数据 |
 
 > 💡 **特别感谢**：
-> - [Scrapling](https://git.wxbfnnas.com/wxb/scrapling.git) 提供了轻量、可扩展的本地网页爬取能力，
+> - [Scrapling](https://github.com/D4Vinci/Scrapling.git) 提供了轻量、可扩展的本地网页爬取能力，
 >   让项目能够在不依赖外部搜索 API 的情况下直接获取公开行情数据，显著提升了数据可控性与准确性。
 > - [AKShare](https://www.akshare.xyz/) 社区提供了丰富、免费且持续维护的 A 股数据接口，
 >   让个人开发者也能以合规方式获取高质量金融数据。
