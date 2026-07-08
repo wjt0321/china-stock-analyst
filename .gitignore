@@ -39,8 +39,9 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Stock reports (optional - comment out if you want to track reports)
-# stock-reports/*.md
+# Stock reports: keep directory, ignore generated .md files
+stock-reports/*.md
+!stock-reports/.gitkeep
 
 # 代码审核文件
 code_review_report.md
