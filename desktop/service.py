@@ -1,5 +1,7 @@
 import json
 import logging
+import os
+import platform
 import sys
 from pathlib import Path
 
@@ -16,6 +18,27 @@ from desktop.scrapling_adapters.ths import ThsScraper
 from desktop.scrapling_adapters.tencent import TencentScraper
 
 LOGGER = logging.getLogger(__name__)
+
+
+def get_app_data_dir() -> Path:
+    """Return the platform-appropriate application data directory.
+
+    Honors the APP_DATA_DIR environment variable (set by the Tauri host)
+    and falls back to:
+      - Windows: %LOCALAPPDATA%/china-stock-analyst-desktop/
+      - Other:   ~/.local/share/china-stock-analyst-desktop/
+    """
+    override = os.environ.get("APP_DATA_DIR")
+    if override:
+        return Path(override)
+
+    if platform.system() == "Windows":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if not local_app_data:
+            local_app_data = Path.home() / "AppData" / "Local"
+        return Path(local_app_data) / "china-stock-analyst-desktop"
+
+    return Path.home() / ".local" / "share" / "china-stock-analyst-desktop"
 
 
 class Service:
@@ -103,9 +126,14 @@ class Service:
 
 
 def main():
-    logging.basicConfig(level=logging.INFO, filename="desktop.log", filemode="a")
+    app_data_dir = get_app_data_dir()
+    app_data_dir.mkdir(parents=True, exist_ok=True)
+
+    log_path = app_data_dir / "desktop.log"
+    logging.basicConfig(level=logging.INFO, filename=str(log_path), filemode="a")
+
     base_dir = Path(__file__).resolve().parent.parent
-    db_path = base_dir / "data" / "app.db"
+    db_path = app_data_dir / "app.db"
     storage = Storage(db_path)
     storage.init_schema()
     config = ConfigManager(storage, defaults_path=base_dir / "config" / "settings.json")

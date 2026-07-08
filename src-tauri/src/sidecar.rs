@@ -1,50 +1,69 @@
-use std::io::Write;
-use std::process::Stdio;
+use std::collections::VecDeque;
+use std::io::{BufRead, Write};
+use std::process::{Child, Stdio};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_shell::ShellExt;
 
 pub struct SidecarState {
     pub stdin: Mutex<std::process::ChildStdin>,
-    pub output: Mutex<String>,
+    pub output: Mutex<VecDeque<String>>,
+    pub child: Mutex<Option<Child>>,
+    pub request_counter: Mutex<u64>,
 }
 
 pub fn spawn_sidecar(app: &AppHandle) -> Result<(), String> {
-    let sidecar_command = app
+    let mut sidecar_command = app
         .shell()
-        .sidecar("sidecars/python")
+        .sidecar("python")
         .map_err(|e| e.to_string())?;
 
-    let mut child: std::process::Child = std::process::Command::from(
-        sidecar_command.arg("desktop/service.py"),
-    )
-    .stdin(Stdio::piped())
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped())
-    .spawn()
-    .map_err(|e| e.to_string())?;
+    // Tell the Python service where to store application data and logs.
+    // The service falls back to platform defaults when this is not set.
+    if let Ok(app_data_dir) = app.path().app_data_dir() {
+        sidecar_command = sidecar_command.env("APP_DATA_DIR", app_data_dir);
+    }
+
+    let mut child = std::process::Command::from(sidecar_command)
+        .arg("desktop/service.py")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
 
     let stdin = child.stdin.take().ok_or("Failed to open sidecar stdin")?;
     let stdout = child.stdout.take().ok_or("Failed to open sidecar stdout")?;
+    let stderr = child.stderr.take().ok_or("Failed to open sidecar stderr")?;
 
     app.manage(SidecarState {
         stdin: Mutex::new(stdin),
-        output: Mutex::new(String::new()),
+        output: Mutex::new(VecDeque::new()),
+        child: Mutex::new(Some(child)),
+        request_counter: Mutex::new(0),
     });
 
-    // Spawn stdout reader
+    // Dedicated stdout reader: push complete lines into the shared queue.
     let app_clone = app.clone();
     std::thread::spawn(move || {
         let reader = std::io::BufReader::new(stdout);
-        use std::io::BufRead;
         for line in reader.lines() {
             if let Ok(line) = line {
                 if let Some(state) = app_clone.try_state::<SidecarState>() {
                     if let Ok(mut output) = state.output.lock() {
-                        output.push_str(&line);
-                        output.push('\n');
+                        output.push_back(line);
                     }
                 }
+            }
+        }
+    });
+
+    // Stderr drainer: prevents the sidecar pipe from deadlocking.
+    std::thread::spawn(move || {
+        let reader = std::io::BufReader::new(stderr);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                eprintln!("[sidecar stderr] {}", line);
             }
         }
     });
@@ -52,28 +71,75 @@ pub fn spawn_sidecar(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Reap the sidecar child process. Called from the window close handler.
+pub fn reap_sidecar(app: &AppHandle) {
+    if let Some(state) = app.try_state::<SidecarState>() {
+        if let Ok(mut child) = state.child.lock() {
+            if let Some(mut c) = child.take() {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+        }
+    }
+}
+
 #[tauri::command]
 pub fn send_command(state: State<'_, SidecarState>, command: String) -> Result<String, String> {
-    let mut stdin = state.stdin.lock().map_err(|e| e.to_string())?;
-    writeln!(stdin, "{}", command).map_err(|e| e.to_string())?;
-    stdin.flush().map_err(|e| e.to_string())?;
+    // Parse the incoming command so we can inject a request id if absent.
+    let mut command_value: serde_json::Value =
+        serde_json::from_str(&command).map_err(|e| e.to_string())?;
 
-    // Simple synchronous read: wait for one line of output
+    let expected_id = if let Some(id) = command_value.get("request_id").and_then(|v| v.as_str()) {
+        id.to_string()
+    } else {
+        let mut counter = state.request_counter.lock().map_err(|e| e.to_string())?;
+        *counter += 1;
+        let id = format!("req-{}", *counter);
+        command_value["request_id"] = serde_json::Value::String(id.clone());
+        id
+    };
+
+    let command = command_value.to_string();
+
+    {
+        let mut stdin = state.stdin.lock().map_err(|e| e.to_string())?;
+        writeln!(stdin, "{}", command).map_err(|e| e.to_string())?;
+        stdin.flush().map_err(|e| e.to_string())?;
+    }
+
+    // Wait for a response line whose request_id matches the sent command.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         if std::time::Instant::now() > deadline {
             return Err("Sidecar response timeout".to_string());
         }
-        {
-            let output = state.output.lock().map_err(|e| e.to_string())?;
-            if !output.is_empty() {
-                let mut lines: Vec<&str> = output.lines().collect();
-                if let Some(line) = lines.pop() {
-                    // Note: real implementation needs proper line queue, this is illustrative
-                    return Ok(line.to_string());
+
+        let mut output = state.output.lock().map_err(|e| e.to_string())?;
+        let mut i = 0;
+        while i < output.len() {
+            let line = output[i].clone();
+            match serde_json::from_str::<serde_json::Value>(&line) {
+                Ok(value) => {
+                    if value
+                        .get("request_id")
+                        .and_then(|v| v.as_str())
+                        == Some(&expected_id)
+                    {
+                        output.remove(i);
+                        return Ok(line);
+                    }
+                }
+                Err(_) => {
+                    // Drop malformed lines; they cannot be matched to a request.
+                    output.remove(i);
+                    continue;
                 }
             }
+            i += 1;
         }
+
+        // Release the lock while sleeping so the reader thread can append lines.
+        drop(output);
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
