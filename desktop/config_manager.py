@@ -1,8 +1,11 @@
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from desktop.storage import Storage
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_SOURCE_PRIORITY = ["eastmoney", "sina", "ths", "tencent", "akshare"]
@@ -35,7 +38,10 @@ class ConfigManager:
             try:
                 with self.defaults_path.open("r", encoding="utf-8") as f:
                     return json.load(f)
-            except Exception:
+            except (json.JSONDecodeError, OSError):
+                return {}
+            except Exception as exc:  # pragma: no cover - defensive log
+                logger.exception("Unexpected error loading defaults from %s: %s", self.defaults_path, exc)
                 return {}
         return {}
 
@@ -51,8 +57,10 @@ class ConfigManager:
                 self._defaults.get("llm", DEFAULT_LLM_CONFIG),
             )
         if self.storage.get_setting("analysis_config") is None:
-            analysis = self._defaults.get("scoring", {})
-            analysis.update(self._defaults.get("validation", {}))
+            analysis = {
+                **self._defaults.get("scoring", {}),
+                **self._defaults.get("validation", {}),
+            }
             self.storage.save_setting(
                 "analysis_config",
                 {**DEFAULT_ANALYSIS_CONFIG, **analysis},
