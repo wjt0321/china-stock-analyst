@@ -1,12 +1,60 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
-use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager, State};
 
 /// Time to wait for a matching sidecar response before failing the request.
 const SIDECAR_RESPONSE_TIMEOUT_SECS: u64 = 180;
+
+/// Locate a working Python executable.
+/// Prefer a system install (PY_PYTHON, PYTHON_EXE env vars, or common paths),
+/// then fall back to searching PATH for `python`/`python3`.
+fn find_python_exe() -> PathBuf {
+    if let Ok(exe) = std::env::var("PYTHON_EXE") {
+        let p = PathBuf::from(exe);
+        if p.exists() {
+            return p;
+        }
+    }
+
+    let candidates: Vec<PathBuf> = [
+        r"C:\Python314\python.exe",
+        r"C:\Python313\python.exe",
+        r"C:\Python312\python.exe",
+        r"C:\Python311\python.exe",
+        r"C:\Python310\python.exe",
+        r"C:\Program Files\Python314\python.exe",
+        r"C:\Program Files\Python313\python.exe",
+        r"C:\Program Files\Python312\python.exe",
+        r"C:\Program Files\Python311\python.exe",
+        r"C:\Program Files\Python310\python.exe",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect();
+
+    for c in &candidates {
+        if c.exists() {
+            return c.clone();
+        }
+    }
+
+    // Last resort: search PATH for python / python3.
+    if let Ok(path_env) = std::env::var("PATH") {
+        for name in ["python.exe", "python3.exe"] {
+            for dir in std::env::split_paths(&path_env) {
+                let candidate = dir.join(name);
+                if candidate.exists() {
+                    return candidate;
+                }
+            }
+        }
+    }
+
+    PathBuf::from("python")
+}
 
 pub struct SidecarState {
     pub stdin: Mutex<std::process::ChildStdin>,
@@ -18,17 +66,46 @@ pub struct SidecarState {
 pub fn spawn_sidecar(app: &AppHandle) -> Result<(), String> {
     // The committed `python-x86_64-pc-windows-msvc.exe` is a placeholder and
     // `.bat` files cannot be executed through Tauri's sidecar API. Spawn the
-    // batch launcher directly with `cmd /c` for the dev workflow.
-    let bat_path = app
-        .path()
-        .resolve("sidecars/python.bat", BaseDirectory::Resource)
-        .map_err(|e| format!("Failed to resolve sidecar batch path: {}", e))?;
+    // system Python directly for the dev workflow.
+    //
+    // In dev mode the executable lives at:
+    //   <project_root>/src-tauri/target/debug/china-stock-analyst-desktop.exe
+    // so we derive the project root by walking up from the executable path.
+    let exe_path = std::env::current_exe().map_err(|e| format!("Failed to get current exe: {}", e))?;
+    let exe_dir = exe_path.parent().ok_or("Executable has no parent directory")?;
+    // src-tauri/target/debug -> src-tauri/target -> src-tauri -> project_root
+    let project_root: PathBuf = [exe_dir, Path::new(".."), Path::new(".."), Path::new("..")]
+        .iter()
+        .collect::<PathBuf>()
+        .canonicalize()
+        .map_err(|e| format!("Failed to canonicalize project root: {}", e))?;
+    let service_path = project_root.join("desktop").join("service.py");
 
-    let mut cmd = Command::new("cmd");
-    cmd.args(["/c", bat_path.to_string_lossy().as_ref()])
+    if !service_path.exists() {
+        return Err(format!(
+            "service.py not found at {}; project root derived as {}",
+            service_path.display(),
+            project_root.display()
+        ));
+    }
+
+    eprintln!("[sidecar] spawning python {} (project root: {})", service_path.display(), project_root.display());
+
+    // Use an absolute Python path to avoid resolving a potentially incompatible
+    // `python` shim from the parent process's PATH (e.g., Node/npm installed ones).
+    let python_exe = find_python_exe();
+    eprintln!("[sidecar] using python executable: {}", python_exe.display());
+
+    let mut cmd = Command::new(&python_exe);
+    cmd.arg(&service_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .current_dir(&project_root);
+
+    // Make sure desktop.* and scripts.* packages are importable.
+    let pythonpath = std::env::var("PYTHONPATH").unwrap_or_default();
+    cmd.env("PYTHONPATH", format!("{};{}", project_root.display(), pythonpath));
 
     // Tell the Python service where to store application data and logs.
     // The service falls back to platform defaults when this is not set.
@@ -64,6 +141,7 @@ pub fn spawn_sidecar(app: &AppHandle) -> Result<(), String> {
                 }
             }
         }
+        eprintln!("[sidecar] stdout reader thread ended; sidecar process likely exited");
     });
 
     // Stderr drainer: prevents the sidecar pipe from deadlocking.
@@ -93,6 +171,7 @@ pub fn reap_sidecar(app: &AppHandle) {
 
 #[tauri::command]
 pub fn send_command(state: State<'_, SidecarState>, command: String) -> Result<String, String> {
+    eprintln!("[sidecar] received command: {}", command);
     // Parse the incoming command so we can inject a request id if absent.
     let mut command_value: serde_json::Value =
         serde_json::from_str(&command).map_err(|e| e.to_string())?;

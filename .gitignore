@@ -17,6 +17,7 @@ scripts/.eastmoney_daily_counter.json
 # Desktop app runtime artifacts
 data/
 desktop.log
+sidecar_stderr.log
 
 # Virtual environment
 venv/

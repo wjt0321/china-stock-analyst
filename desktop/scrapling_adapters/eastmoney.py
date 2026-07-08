@@ -26,8 +26,10 @@ class EastmoneyScraper(BaseStockScraper):
         try:
             # Timeouts are enforced by DataFetcher at the orchestration level.
             page = self.fetcher.fetch(url, headless=True, network_idle=True)
-            price_el = page.css_first(".price")
-            change_el = page.css_first(".change")
+            price_els = page.css(".price")
+            change_els = page.css(".change")
+            price_el = price_els[0] if price_els else None
+            change_el = change_els[0] if change_els else None
             return QuoteSnapshot(
                 price=_to_float(price_el.text if price_el else None),
                 change=_to_float(change_el.text if change_el else None),

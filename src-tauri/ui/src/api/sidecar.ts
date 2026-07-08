@@ -1,9 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export async function sendCommand<T = unknown>(cmd: object): Promise<T> {
+  const payload = JSON.stringify(cmd);
+  console.log("[sidecar] invoke send_command", payload);
   const response = await invoke<string>("send_command", {
-    command: JSON.stringify(cmd),
+    command: payload,
   });
+  console.log("[sidecar] raw response", response);
   return JSON.parse(response) as T;
 }
 

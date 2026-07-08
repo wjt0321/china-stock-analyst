@@ -25,7 +25,8 @@ class ThsScraper(BaseStockScraper):
         try:
             # Timeouts are enforced by DataFetcher at the orchestration level.
             page = self.fetcher.fetch(url, headless=True, network_idle=True)
-            price_el = page.css_first(".price")
+            price_els = page.css(".price")
+            price_el = price_els[0] if price_els else None
             return QuoteSnapshot(price=_to_float(price_el.text if price_el else None))
         except Exception as e:
             LOGGER.error(f"Ths fetch_quote failed: {e}")
