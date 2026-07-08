@@ -2505,3 +2505,54 @@ Phase 6: 打包
 ```
 
 每个 Task 内部按“写测试 → 跑测试（失败）→ 实现 → 跑测试（通过）→ 提交”执行。
+
+---
+
+## 下一阶段迭代上下文（待办）
+
+> 以下内容留到后续迭代处理，当前阶段不实施。
+
+### 1. 完全对齐 `agents/` 智能体输出 Schema
+
+**目标**：让 `desktop/analysis_engine.py` 的专家输出字段与 `agents/*.md` 中声明的 JSON Schema 一致，而不是现在的简化内部格式。
+
+**当前差距**：
+- `agents/` 要求每个专家输出 `technical_view` / `risk_verdict` / `industry_outlook` 等具体字段，当前桌面端统一使用简化的 `view`。
+- `agents/` 要求 `evidences` 为 `{conclusion, value, source_url, timestamp}` 结构化对象，当前为字符串列表。
+- 数据审计专家（`stock-data-auditor`）和专家鉴别 Agent（`stock-identity-auditor`）当前是 stub，需要完整实现。
+- 缺少 `schema_version` / `agent` 标识字段。
+
+**建议实现策略（避免与现有前端冲突）**：
+1. 保留现有 `view`、`decision_hint`、`indicators`、`evidences`（字符串版）字段，确保前端和旧报告不崩。
+2. 新增 schema 要求的字段（如 `technical_view`、`trend_strength`、`key_levels`、`trigger_conditions` 等）。
+3. 新增 `evidences_structured` 数组，元素为 `{conclusion, value, source_url, timestamp}`；逐步将字符串证据迁移为结构化证据。
+4. 实现完整的数据审计专家和专家鉴别 Agent，替换 stub。
+5. 前端和 `report_renderer.py` 后续再消费新字段。
+
+**相关文件**：
+- `desktop/analysis_engine.py`
+- `desktop/report_renderer.py`
+- `src-tauri/ui/src/pages/Analyzer.tsx`
+- `src-tauri/ui/src/pages/ReportViewer.tsx`
+- `agents/*.md`
+
+---
+
+### 2. UI/UX 迭代
+
+**目标**：优化桌面端界面与交互体验。
+
+**待改进点**：
+- 分析进度展示：当前只有“分析中...”文字，缺少多专家执行进度或步骤指示。
+- 错误提示：批量分析失败、Sidecar 超时、数据源全部失败等场景需要更友好的提示。
+- 报告阅读体验：当前为简单 Markdown 渲染，可加入目录、关键词高亮、评分可视化。
+- 看板信息密度：自选股看板可增加最新价、涨跌幅、最近报告摘要等。
+- 设置页：当前仅 LLM 开关，后续可增加数据源优先级拖拽、阈值配置、主题切换等。
+- 表单校验：股票代码输入框应校验 6 位数字、A 股前缀等。
+
+**优先级**：在完成专家 Schema 对齐和核心功能稳定后再进行。
+
+**相关文件**：
+- `src-tauri/ui/src/pages/*.tsx`
+- `src-tauri/ui/src/components/*.tsx`
+- `src-tauri/ui/src/App.tsx`
