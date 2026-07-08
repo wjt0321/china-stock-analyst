@@ -53,3 +53,6 @@ src-tauri/ui/node_modules/
 src-tauri/ui/dist/
 src-tauri/gen/
 src-tauri/**/*.rs.bk
+
+# Tauri build outputs
+src-tauri/sidecars/python/
