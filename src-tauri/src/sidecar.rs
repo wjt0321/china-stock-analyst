@@ -113,6 +113,11 @@ pub fn spawn_sidecar(app: &AppHandle) -> Result<(), String> {
         cmd.env("APP_DATA_DIR", app_data_dir);
     }
 
+    // Force UTF-8 for stdout/stderr so the Rust reader can decode responses
+    // reliably on Windows systems where the default console code page is GBK.
+    cmd.env("PYTHONIOENCODING", "utf-8");
+    cmd.env("PYTHONUTF8", "1");
+
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
