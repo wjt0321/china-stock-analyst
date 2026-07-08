@@ -304,6 +304,28 @@ python -m pytest tests/test_integration.py -v
 
 ---
 
+## 桌面端
+
+项目已支持 Tauri + Python Sidecar 桌面端，详见：
+- 设计文档：`docs/superpowers/specs/2026-07-08-desktop-app-design.md`
+- 实施计划：`docs/superpowers/plans/2026-07-08-desktop-app-implementation-plan.md`
+
+### 开发运行
+
+```bash
+cd src-tauri/ui && npm install && npm run dev
+cd desktop && pip install -e ".[dev]"
+```
+
+### 打包
+
+```bash
+python scripts/build_sidecar.py
+cd src-tauri && cargo tauri build
+```
+
+---
+
 ## 📅 更新日志
 
 ### v3.1.0 (2026-05-01)
